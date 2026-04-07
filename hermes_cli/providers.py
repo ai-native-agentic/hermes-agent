@@ -140,6 +140,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "lunark": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("LUNARK_API_KEY",),
+        base_url_override="https://llm.lunark.ai/v1",
+        base_url_env_var="LUNARK_BASE_URL",
+    ),
     "xai": HermesOverlay(
         transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
@@ -270,6 +277,10 @@ ALIASES: Dict[str, str] = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
+    # lunark
+    "lunark-ai": "lunark",
+    "lunark.ai": "lunark",
+
     # xiaomi
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
@@ -305,6 +316,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "stepfun": "StepFun Step Plan",
+    "lunark": "Lunark (vLLM)",
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
@@ -418,8 +430,6 @@ def get_label(provider_id: str) -> str:
         return pdef.name
 
     return canonical
-
-
 
 
 def is_aggregator(provider: str) -> bool:

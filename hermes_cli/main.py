@@ -6709,6 +6709,7 @@ For more help on a command:
             "minimax",
             "minimax-cn",
             "kilocode",
+            "lunark",
             "xiaomi",
             "arcee",
             "nvidia",

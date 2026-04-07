@@ -233,6 +233,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "lunark": ProviderConfig(
+        id="lunark",
+        name="Lunark (vLLM)",
+        auth_type="api_key",
+        inference_base_url="https://llm.lunark.ai/v1",
+        api_key_env_vars=("LUNARK_API_KEY",),
+        base_url_env_var="LUNARK_BASE_URL",
+    ),
 }
 
 

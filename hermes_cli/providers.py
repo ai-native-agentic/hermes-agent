@@ -122,6 +122,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "lunark": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("LUNARK_API_KEY",),
+        base_url_override="https://llm.lunark.ai/v1",
+        base_url_env_var="LUNARK_BASE_URL",
+    ),
 }
 
 
@@ -212,6 +219,10 @@ ALIASES: Dict[str, str] = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
+    # lunark
+    "lunark-ai": "lunark",
+    "lunark.ai": "lunark",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -233,6 +244,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "local": "Local endpoint",
+    "lunark": "Lunark (vLLM)",
 }
 
 
@@ -386,6 +398,7 @@ LABELS: Dict[str, str] = {
     "opencode-go": "OpenCode Go",
     "kilo": "Kilo Gateway",
     "huggingface": "Hugging Face",
+    "lunark": "Lunark (vLLM)",
     "local": "Local endpoint",
     "custom": "Custom endpoint",
     # Legacy Hermes IDs (point to same providers)

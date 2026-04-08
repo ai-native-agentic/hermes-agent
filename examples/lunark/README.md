@@ -38,6 +38,11 @@ python examples/lunark/matrix.py
 | `moa.py` | Mixture-of-Agents demo: query all 4 models in parallel, majority-vote the extracted answer, compare against each single model. | `/tmp/acp_moa_results.json` |
 | `advanced.py` | ACP advanced features: multi-turn coherence, `session/list`, `session/fork` divergence, `session/cancel` mid-stream. Raw JSON-RPC. | `/tmp/acp_advanced_results.json` |
 | `multi_model.py` | 5 representative prompts × 4 parallel models, fast smoke comparison. | `/tmp/multi_model_results.json` |
+| `extractor.py` | Robust answer extraction (LaTeX/markdown/fraction/decimal/word normalization) used by the verifier-style runners. | — |
+| `moa_hard.py` | 100 hard arithmetic / logic / trivia prompts × 4 models, both simple and weighted majority voting. Persists per-job JSONL for post-hoc analysis. | `/tmp/acp_moa_v2_jobs.jsonl` |
+| `moa_aggregator.py` | Paper-style MoA: 3 reference models in parallel → 1 aggregator (Qwen3-32B) synthesizes. | `/tmp/acp_moa_aggregator_results.json` |
+| `variance.py` | 5-run variance measurement on the 100 hard prompts (2,000 calls). Reports per-model mean ± stdev and stable vs flippy prompts. | `/tmp/acp_variance_summary.json` |
+| `use_cases.py` | 50 practical use cases across 10 industry categories (code / devops / data / research / automation / writing / learning / math / meta / assistant), each routed to the most appropriate model based on V3 variance data. | `/tmp/uc50_results.jsonl` |
 
 All runners depend on `examples/acp_client.py` (the reusable
 `HermesACPClient` wrapper) and assume `hermes` is on `PATH`.

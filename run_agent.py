@@ -3065,12 +3065,25 @@ class AIAgent:
                 break
         if saw_tool_call:
             return
-        # Warn the user (CLI / log) but never inject this back into messages
+        # Warn the user (CLI / log) but never inject this back into messages.
+        # Include a concrete retry path so the user can immediately re-run the
+        # turn with an explicit "use the tool" instruction. The session id is
+        # available for /resume so they don't lose context.
+        retry_hint = ""
+        try:
+            sid = getattr(self, "session_id", "") or ""
+            if sid:
+                retry_hint = (
+                    f"\n   To retry forcing the tool call:\n"
+                    f"     hermes --resume {sid} 'Actually call the relevant tool — do not narrate.'"
+                )
+        except Exception:
+            pass
         warning = (
             f"{self.log_prefix}⚠ Possible silent failure: the model said it "
             "performed an action but no tool was actually called. "
             "Verify the side effect (e.g. check ~/.hermes/skills/, ~/.hermes/memory.md) "
-            "before trusting the response."
+            "before trusting the response." + retry_hint
         )
         try:
             self._vprint(warning, force=True)

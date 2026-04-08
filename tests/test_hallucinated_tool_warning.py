@@ -17,12 +17,13 @@ import pytest
 from run_agent import AIAgent
 
 
-def _make_agent_stub() -> SimpleNamespace:
+def _make_agent_stub(session_id: str = "") -> SimpleNamespace:
     """Build the minimum surface AIAgent._maybe_warn_hallucinated_tool_action
     needs to be unit-testable without instantiating a full agent."""
     stub = SimpleNamespace()
     stub.log_prefix = ""
     stub._vprint = MagicMock()
+    stub.session_id = session_id
     # Bind the unbound method for direct invocation against the stub.
     stub._maybe_warn_hallucinated_tool_action = (
         AIAgent._maybe_warn_hallucinated_tool_action.__get__(stub)
@@ -135,3 +136,36 @@ def test_empty_response_does_not_warn():
     agent = _make_agent_stub()
     agent._maybe_warn_hallucinated_tool_action("", [])
     assert not agent._vprint.called
+
+
+def test_warning_includes_resume_hint_when_session_id_set():
+    """The user should get a copy-pasteable command to retry the turn with
+    an explicit "use the tool" instruction. Without the session id we
+    can't build it, so it's only included when one is available."""
+    agent = _make_agent_stub(session_id="20260408_141529_bd77df")
+    messages = [
+        {"role": "user", "content": "save my favorite color"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    agent._maybe_warn_hallucinated_tool_action(
+        "I saved that to memory.", messages,
+    )
+    assert agent._vprint.called
+    msg = agent._vprint.call_args[0][0]
+    assert "hermes --resume 20260408_141529_bd77df" in msg
+    assert "do not narrate" in msg.lower() or "actually call" in msg.lower()
+
+
+def test_warning_omits_resume_hint_without_session_id():
+    """No session id → just print the warning, no retry hint."""
+    agent = _make_agent_stub(session_id="")
+    messages = [
+        {"role": "user", "content": "save my color"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    agent._maybe_warn_hallucinated_tool_action(
+        "I saved that to memory.", messages,
+    )
+    assert agent._vprint.called
+    msg = agent._vprint.call_args[0][0]
+    assert "hermes --resume" not in msg

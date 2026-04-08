@@ -96,7 +96,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base", default=os.environ.get("LUNARK_BASE_URL", "https://llm.lunark.ai/v1"))
     ap.add_argument("--api-key", default=os.environ.get("LUNARK_API_KEY", "vllm-local"))
-    ap.add_argument("--root", default="/tmp", help="Root directory for hermes_<MODEL> profiles")
+    # Persistent location by default so profiles survive a reboot. Tests
+    # and one-shot demos can pass --root /tmp explicitly.
+    _default_root = os.path.join(os.path.expanduser("~"), ".hermes", "profiles")
+    ap.add_argument("--root", default=_default_root,
+                    help=f"Root directory for hermes_<MODEL> profiles "
+                         f"(default: {_default_root}, persists across reboots)")
     ap.add_argument("--json", action="store_true", help="Emit JSON summary instead of human format")
     args = ap.parse_args()
 

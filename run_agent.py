@@ -7124,6 +7124,21 @@ class AIAgent:
         # Falls back to "" so the build path stays string-typed.
         self._current_user_query = user_message if isinstance(user_message, str) else ""
 
+        # N-B2 Self-Refine opt-in flag — strip the leading "/refine "
+        # token (or trailing "  /refine") and remember to refine after
+        # the first response. Uses an instance flag so the refine pass
+        # itself doesn't recurse.
+        self._self_refine_pending = False
+        if isinstance(user_message, str) and not getattr(self, "_self_refining_now", False):
+            stripped = user_message.strip()
+            if stripped.startswith("/refine "):
+                user_message = stripped[len("/refine "):].lstrip()
+                self._self_refine_pending = True
+            elif stripped.endswith(" /refine"):
+                user_message = stripped[: -len(" /refine")].rstrip()
+                self._self_refine_pending = True
+            self._current_user_query = user_message or ""
+
         # When skills.retrieval mode is "topk", the system prompt depends on
         # the per-turn user query, so we must invalidate the cached prompt
         # so _build_system_prompt is recomputed for THIS turn. The Anthropic
@@ -9349,6 +9364,50 @@ class AIAgent:
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
+
+        # N-B2 Self-Refine: if the user prefixed the prompt with /refine,
+        # do one critique-and-revise pass on the response. Capped at one
+        # extra round-trip per turn (controlled by _self_refining_now flag)
+        # so the loop can never fan out. Failures during refine are silent
+        # — the original response is still returned.
+        if (
+            getattr(self, "_self_refine_pending", False)
+            and not interrupted
+            and final_response
+            and not getattr(self, "_self_refining_now", False)
+        ):
+            try:
+                self._self_refining_now = True
+                self._self_refine_pending = False
+                if not self.quiet_mode:
+                    self._vprint(f"{self.log_prefix}🪞 Self-refine pass...", force=True)
+                critique_prompt = (
+                    "Below is your previous answer to the user's question. "
+                    "Critique it briefly: list any factual errors, missing details, "
+                    "or unclear wording in 1-3 bullets. Then output a single "
+                    "improved version. Mark the improved answer with the literal "
+                    "header 'FINAL:' on its own line so the agent can extract it.\n\n"
+                    f"Previous answer:\n{final_response}"
+                )
+                # Run a fresh single-turn conversation against the same model.
+                # Use a synthetic user message; don't pollute the real history.
+                refined = self.run_conversation(
+                    user_message=critique_prompt,
+                    conversation_history=[],
+                    task_id=task_id,
+                )
+                refined_text = (refined.get("final_response") or "").strip()
+                if "FINAL:" in refined_text:
+                    final_response = refined_text.split("FINAL:", 1)[1].strip()
+                elif refined_text:
+                    # Fall back to the full critique-and-revision text
+                    final_response = refined_text
+                if not self.quiet_mode:
+                    self._vprint(f"{self.log_prefix}🪞 Self-refine done", force=True)
+            except Exception as exc:
+                logger.debug("self-refine failed: %s", exc)
+            finally:
+                self._self_refining_now = False
 
         # Build result with interrupt info if applicable
         result = {

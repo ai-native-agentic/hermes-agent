@@ -84,3 +84,50 @@ def test_record_truncates_long_strings(feedback_home):
     assert len(e["reason"]) <= 500
     assert len(e["user_message"]) <= 500
     assert len(e["assistant_response"]) <= 1000
+
+
+# ── N-C1: thumbs down → error lesson bridge ────────────────────────────
+
+def test_thumbs_down_creates_error_lesson(feedback_home):
+    """N-C1: a /rate down with concrete user+assistant context should
+    leave behind an error lesson the next similar prompt can see."""
+    from agent.feedback import record_rating
+    from agent.error_lessons import lessons_for_query, clear_all
+    clear_all()
+
+    record_rating(
+        "down",
+        reason="hallucinated facts",
+        user_message="What is the population of Mars colony 7?",
+        assistant_response="Mars colony 7 has 47,000 residents.",
+    )
+
+    found = lessons_for_query("population of Mars colony 7?")
+    assert len(found) == 1
+    assert "user_thumbs_down" in found[0]["tool"]
+    assert "hallucinated facts" in found[0]["error"]
+
+
+def test_thumbs_up_does_not_create_lesson(feedback_home):
+    """A positive rating must NOT pollute the error lesson log."""
+    from agent.feedback import record_rating
+    from agent.error_lessons import _load_all as _load_lessons, clear_all
+    clear_all()
+
+    record_rating(
+        "up",
+        user_message="What is 17*23?",
+        assistant_response="391",
+    )
+    assert _load_lessons() == []
+
+
+def test_thumbs_down_without_context_skips_bridge(feedback_home):
+    """If we don't have a concrete user message AND assistant response
+    we don't have anything actionable to record — skip the bridge."""
+    from agent.feedback import record_rating
+    from agent.error_lessons import _load_all as _load_lessons, clear_all
+    clear_all()
+
+    record_rating("down", reason="just bad")  # no user/assistant strings
+    assert _load_lessons() == []

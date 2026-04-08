@@ -4653,6 +4653,66 @@ For more help on a command:
         help="Attempt to fix issues automatically"
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # bench command — cold vs warm-all vs warm-topk skill injection bench
+    # =========================================================================
+    bench_parser = subparsers.add_parser(
+        "bench",
+        help="Run the cold/warm/topk skill-injection performance benchmark",
+        description="Measure how skill accumulation affects agent latency. "
+                    "Default: 5 tasks × 1 run (~3 min). Use --heavy for the "
+                    "30-task × 5-run statistical version (~60 min).",
+    )
+    bench_parser.add_argument(
+        "--model", default="Qwen3-32B",
+        help="Model to benchmark (default: Qwen3-32B)",
+    )
+    bench_parser.add_argument(
+        "--runs", type=int, default=1,
+        help="Samples per (task × condition). Default 1.",
+    )
+    bench_parser.add_argument(
+        "--heavy", action="store_true",
+        help="Heavy mode: 5 runs per condition for stat-meaningful averages",
+    )
+    bench_parser.add_argument(
+        "--out", default="",
+        help="Optional path to write JSON results",
+    )
+
+    def cmd_bench(args):
+        # Defer the import so the bench module's heavy code path doesn't
+        # affect cold-start of unrelated commands like `hermes status`.
+        import importlib.util as _ilu
+        bench_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "examples", "lunark", "bench.py",
+        )
+        if not os.path.exists(bench_path):
+            print(f"❌ Benchmark module not found at {bench_path}")
+            print("   This is the lunark recipe runner; install the repo "
+                  "in editable mode to use it.")
+            raise SystemExit(1)
+        spec = _ilu.spec_from_file_location("hermes_bench_runner", bench_path)
+        mod = _ilu.module_from_spec(spec)
+        # Forward our argv slice to the module's argparse
+        prev_argv = sys.argv
+        try:
+            sys.argv = ["hermes-bench"]
+            for k in ("model", "runs", "heavy", "out"):
+                v = getattr(args, k)
+                if k == "heavy":
+                    if v:
+                        sys.argv.append("--heavy")
+                else:
+                    if v not in (None, "", 0):
+                        sys.argv.extend([f"--{k}", str(v)])
+            spec.loader.exec_module(mod)
+        finally:
+            sys.argv = prev_argv
+
+    bench_parser.set_defaults(func=cmd_bench)
     
     # =========================================================================
     # config command

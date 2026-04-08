@@ -244,7 +244,7 @@ async def _run_reference_model_safe(
                 api_params["temperature"] = temperature
 
             response = await _get_moa_client().chat.completions.create(**api_params)
-            
+
             content = extract_content_or_reasoning(response)
             if not content:
                 # Reasoning-only response — let the retry loop handle it
@@ -253,6 +253,15 @@ async def _run_reference_model_safe(
                     await asyncio.sleep(min(2 ** (attempt + 1), 60))
                     continue
             logger.info("%s responded (%s characters)", model, len(content))
+            # Best-effort metric: this reference model returned usable content.
+            # The data feeds agent.moa_metrics.derive_weights() so future MoA
+            # rounds (or the example runners' weighted vote) can favor models
+            # that have actually performed in this environment.
+            try:
+                from agent.moa_metrics import record_call
+                record_call(model, success=True)
+            except Exception:
+                pass
             return model, content, True
             
         except Exception as e:
@@ -274,6 +283,11 @@ async def _run_reference_model_safe(
             else:
                 error_msg = f"{model} failed after {max_retries} attempts: {error_str}"
                 logger.error("%s", error_msg, exc_info=True)
+                try:
+                    from agent.moa_metrics import record_call
+                    record_call(model, success=False)
+                except Exception:
+                    pass
                 return model, error_msg, False
 
 

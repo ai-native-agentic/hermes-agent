@@ -169,3 +169,55 @@ def test_warning_omits_resume_hint_without_session_id():
     assert agent._vprint.called
     msg = agent._vprint.call_args[0][0]
     assert "hermes --resume" not in msg
+
+
+# ── Multilingual coverage ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("final_response", [
+    # Korean
+    "스킬을 만들었어요. 다음에는 더 빠르게 호출할 수 있습니다.",
+    "메모리에 저장했습니다.",
+    "파일을 작성했어요.",
+    "명령을 실행했습니다.",
+    # Japanese
+    "スキルを作成しました。",
+    "メモリに保存しました。",
+    "ファイルを更新しました。",
+    "コマンドを実行した。",
+    # Chinese
+    "已创建技能。",
+    "已保存到记忆中。",
+    "已写入文件。",
+    "执行了命令。",
+])
+def test_multilingual_hallucination_detected(final_response):
+    """Korean / Japanese / Chinese 'I did the thing' phrasing without an
+    accompanying tool_call should trigger the silent-failure warning."""
+    agent = _make_agent_stub(session_id="sess-cjk")
+    messages = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    agent._maybe_warn_hallucinated_tool_action(final_response, messages)
+    assert agent._vprint.called, f"expected warning for {final_response!r}"
+
+
+def test_korean_chitchat_does_not_warn():
+    """Plain Korean reply with no action verb should NOT trigger."""
+    agent = _make_agent_stub()
+    messages = [
+        {"role": "user", "content": "안녕"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    agent._maybe_warn_hallucinated_tool_action("안녕하세요!", messages)
+    assert not agent._vprint.called
+
+
+def test_japanese_chitchat_does_not_warn():
+    agent = _make_agent_stub()
+    messages = [
+        {"role": "user", "content": "konnichiwa"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    agent._maybe_warn_hallucinated_tool_action("こんにちは!", messages)
+    assert not agent._vprint.called

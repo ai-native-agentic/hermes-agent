@@ -3022,7 +3022,12 @@ class AIAgent:
     # Action verbs / object phrases that strongly suggest the model is
     # claiming to have performed a tool-mediated action (created a file,
     # saved a memory, ran a command). Used by the silent-failure detector.
+    #
+    # Multilingual coverage: English / Korean / Japanese / Chinese.
+    # Anything matching one VERB + one OBJECT in the same response (with
+    # <think> blocks stripped) is considered a potential hallucination.
     _HALLUCINATION_VERBS = (
+        # English
         "created", "i've created", "i have created",
         "saved", "i've saved", "i have saved",
         "added", "i've added", "i have added",
@@ -3030,9 +3035,28 @@ class AIAgent:
         "updated", "i've updated", "i have updated",
         "stored", "i've stored", "i have stored",
         "ran", "executed", "i ran", "i executed",
+        # Korean — past-tense polite endings: 했어요/했습니다/했음/만들었어요
+        "만들었", "만들었어", "만들었습니다", "생성했",
+        "저장했", "저장하였", "추가했", "추가하였",
+        "작성했", "기록했", "실행했", "수정했", "갱신했",
+        # Japanese — 〜しました / 〜した
+        "作成しました", "作成した", "保存しました", "保存した",
+        "追加しました", "追加した", "書きました", "書いた",
+        "更新しました", "更新した", "実行しました", "実行した",
+        # Chinese — 已 / 了
+        "已创建", "创建了", "已保存", "保存了",
+        "已添加", "添加了", "已更新", "更新了",
+        "已写入", "写入了", "已执行", "执行了",
     )
     _HALLUCINATION_OBJECTS = (
+        # English
         "skill", "memory", "todo", "file", "command", "script",
+        # Korean
+        "스킬", "메모리", "파일", "명령", "스크립트", "메모", "기록",
+        # Japanese
+        "スキル", "メモリ", "ファイル", "コマンド", "スクリプト",
+        # Chinese
+        "技能", "记忆", "文件", "命令", "脚本",
     )
 
     def _maybe_warn_hallucinated_tool_action(

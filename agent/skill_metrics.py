@@ -131,3 +131,122 @@ def unused_since(cutoff_epoch: int, all_skill_names: Iterable[str]) -> list:
         if int(entry.get("last_used", 0)) < cutoff_epoch:
             out.append(name)
     return sorted(out)
+
+
+def archive_skill(skill_basename: str) -> dict:
+    """Move a single user/agent-created skill into the archive bucket.
+
+    The archive lives at ``$HERMES_HOME/skills/.archive/<category>/<name>/``.
+    Bundled skills (anything in ``.bundled_manifest``) are NEVER archived
+    so this is safe to call from automation. Returns a small status dict
+    with ``moved_from`` / ``moved_to`` (or ``error`` on failure).
+
+    Side effect: clears the in-process skills prompt cache so the next
+    turn rebuilds without the archived skill.
+    """
+    import shutil
+    from pathlib import Path
+    from hermes_constants import get_hermes_home
+
+    skills_root = get_hermes_home() / "skills"
+    archive_root = skills_root / ".archive"
+
+    # Refuse to archive bundled skills
+    bundled = set()
+    manifest = skills_root / ".bundled_manifest"
+    if manifest.exists():
+        try:
+            with open(manifest) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        bundled.add(line.split(":", 1)[0])
+        except OSError:
+            pass
+    if skill_basename in bundled:
+        return {"error": f"refusing to archive bundled skill {skill_basename!r}"}
+
+    # Find the skill on disk
+    candidates = []
+    if skills_root.exists():
+        for sm in skills_root.glob("*/*/SKILL.md"):
+            if sm.parent.name == skill_basename:
+                candidates.append(sm.parent)
+    if not candidates:
+        return {"error": f"skill {skill_basename!r} not found under {skills_root}"}
+    src = candidates[0]
+    rel = src.relative_to(skills_root)  # e.g. "writing/hello-haiku"
+    dst = archive_root / rel
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.move(str(src), str(dst))
+    except OSError as exc:
+        return {"error": str(exc)}
+
+    # Drop usage record so insights stops listing the archived skill
+    with _LOCK:
+        data = _load()
+        if skill_basename in data:
+            data.pop(skill_basename, None)
+            _save_atomic(data)
+
+    # Bust the prompt builder's cache so the next turn rebuilds the index
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception:
+        pass
+
+    return {"moved_from": str(src), "moved_to": str(dst)}
+
+
+def auto_archive_unused(days: int = 30, all_skill_names: Iterable[str] | None = None) -> dict:
+    """Archive every user skill that hasn't been touched in ``days`` days.
+
+    When ``all_skill_names`` is None, the function discovers them by
+    scanning $HERMES_HOME/skills/ and skipping the bundled set. Returns
+    a summary dict::
+
+        {"archived": [name, ...], "errors": {name: msg, ...}, "scanned": N}
+    """
+    import time as _time
+    from hermes_constants import get_hermes_home
+
+    cutoff = int(_time.time() - days * 86400)
+    skills_root = get_hermes_home() / "skills"
+
+    if all_skill_names is None:
+        all_skill_names = []
+        bundled = set()
+        manifest = skills_root / ".bundled_manifest"
+        if manifest.exists():
+            try:
+                with open(manifest) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            bundled.add(line.split(":", 1)[0])
+            except OSError:
+                pass
+        if skills_root.exists():
+            for sm in skills_root.glob("*/*/SKILL.md"):
+                basename = sm.parent.name
+                if basename not in bundled:
+                    all_skill_names.append(basename)
+
+    candidates = unused_since(cutoff, all_skill_names)
+    archived: list[str] = []
+    errors: dict[str, str] = {}
+    for name in candidates:
+        result = archive_skill(name)
+        if "error" in result:
+            errors[name] = result["error"]
+        else:
+            archived.append(name)
+    return {
+        "archived": archived,
+        "errors": errors,
+        "scanned": len(list(all_skill_names)) if not isinstance(all_skill_names, list) else len(all_skill_names),
+    }

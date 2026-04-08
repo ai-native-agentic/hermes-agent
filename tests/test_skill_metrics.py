@@ -129,3 +129,67 @@ def _import_unused_since():
 
 # late-bound to keep ruff/pylint happy in test_unused_since_uses_cutoff
 unused_since = _import_unused_since()
+
+
+# ── Archive helpers ──────────────────────────────────────────────────────
+
+def _seed_skill(home, category, name, body="body"):
+    """Create a SKILL.md under home/skills/<category>/<name>/."""
+    d = home / "skills" / category / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: test\n---\n\n{body}")
+    return d
+
+
+def test_archive_skill_moves_to_archive_dir(metrics_home):
+    from agent.skill_metrics import archive_skill, record_view, _metrics_path
+    _seed_skill(metrics_home, "writing", "haiku-test")
+    record_view("haiku-test")  # add a usage record
+    result = archive_skill("haiku-test")
+    assert "moved_to" in result
+    assert (metrics_home / "skills" / ".archive" / "writing" / "haiku-test" / "SKILL.md").exists()
+    assert not (metrics_home / "skills" / "writing" / "haiku-test").exists()
+    # Usage record should be wiped after archive
+    import json
+    data = json.loads((metrics_home / "skills" / ".usage.json").read_text())
+    assert "haiku-test" not in data
+
+
+def test_archive_refuses_bundled_skills(metrics_home):
+    from agent.skill_metrics import archive_skill
+    # Build a fake bundled manifest that lists "github-pr-workflow"
+    (metrics_home / "skills" / ".bundled_manifest").write_text("github-pr-workflow:abc123\n")
+    _seed_skill(metrics_home, "github", "github-pr-workflow")
+    result = archive_skill("github-pr-workflow")
+    assert "error" in result
+    assert "bundled" in result["error"].lower()
+    # File must still be present
+    assert (metrics_home / "skills" / "github" / "github-pr-workflow" / "SKILL.md").exists()
+
+
+def test_archive_unknown_skill_returns_error(metrics_home):
+    from agent.skill_metrics import archive_skill
+    result = archive_skill("not-a-real-skill")
+    assert "error" in result
+    assert "not found" in result["error"].lower()
+
+
+def test_auto_archive_unused_skips_recent(metrics_home):
+    from agent.skill_metrics import auto_archive_unused, record_view
+    _seed_skill(metrics_home, "writing", "fresh-skill")
+    _seed_skill(metrics_home, "writing", "stale-skill")
+    record_view("fresh-skill")  # marks fresh-skill as recently used
+
+    summary = auto_archive_unused(days=30)
+    assert "stale-skill" in summary["archived"]
+    assert "fresh-skill" not in summary["archived"]
+    assert (metrics_home / "skills" / ".archive" / "writing" / "stale-skill").exists()
+    assert (metrics_home / "skills" / "writing" / "fresh-skill" / "SKILL.md").exists()
+
+
+def test_auto_archive_unused_with_zero_days_archives_everything(metrics_home):
+    from agent.skill_metrics import auto_archive_unused
+    _seed_skill(metrics_home, "writing", "a")
+    _seed_skill(metrics_home, "devops", "b")
+    summary = auto_archive_unused(days=0)
+    assert set(summary["archived"]) == {"a", "b"}

@@ -4787,12 +4787,85 @@ For more help on a command:
     # config sub-action: interactive enable/disable
     skills_subparsers.add_parser("config", help="Interactive skill configuration — enable/disable individual skills")
 
+    # archive sub-action: move unused user/agent skills out of the active set
+    skills_archive = skills_subparsers.add_parser(
+        "archive",
+        help="Archive unused user/agent skills (move to .archive/, drop from index)",
+    )
+    skills_archive.add_argument(
+        "--days", type=int, default=30,
+        help="Archive skills not used in this many days (default: 30)",
+    )
+    skills_archive.add_argument(
+        "--dry-run", action="store_true",
+        help="Show which skills would be archived without moving them",
+    )
+    skills_archive.add_argument(
+        "name", nargs="?",
+        help="Optional: archive a single skill by basename instead of scanning by --days",
+    )
+
     def cmd_skills(args):
         # Route 'config' action to skills_config module
         if getattr(args, 'skills_action', None) == 'config':
             _require_tty("skills config")
             from hermes_cli.skills_config import skills_command as skills_config_command
             skills_config_command(args)
+        elif getattr(args, 'skills_action', None) == 'archive':
+            from agent.skill_metrics import (
+                archive_skill, auto_archive_unused, unused_since,
+            )
+            import time as _time
+            if args.name:
+                if args.dry_run:
+                    print(f"[dry-run] would archive {args.name}")
+                    return
+                result = archive_skill(args.name)
+                if "error" in result:
+                    print(f"❌ {result['error']}")
+                else:
+                    print(f"✓ Archived {args.name} → {result['moved_to']}")
+                return
+            # Bulk auto-archive
+            if args.dry_run:
+                # Discover candidates without moving anything
+                from hermes_constants import get_hermes_home
+                import glob, os as _os
+                root = get_hermes_home() / "skills"
+                bundled = set()
+                manifest = root / ".bundled_manifest"
+                if manifest.exists():
+                    for line in manifest.read_text().splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            bundled.add(line.split(":", 1)[0])
+                names = []
+                for sm in glob.glob(str(root / "*" / "*" / "SKILL.md")):
+                    base = _os.path.basename(_os.path.dirname(sm))
+                    if base not in bundled:
+                        names.append(base)
+                cutoff = int(_time.time() - args.days * 86400)
+                victims = unused_since(cutoff, names)
+                if not victims:
+                    print(f"  ✓ No skills unused in the last {args.days} days.")
+                    return
+                print(f"  Would archive {len(victims)} skill(s) unused in the last {args.days} days:")
+                for n in victims:
+                    print(f"    – {n}")
+                print(f"  Re-run without --dry-run to move them.")
+                return
+            summary = auto_archive_unused(days=args.days)
+            n = len(summary["archived"])
+            if not n:
+                print(f"  ✓ Nothing to archive (no user skills unused in {args.days} days).")
+            else:
+                print(f"  ✓ Archived {n} skill(s):")
+                for name in summary["archived"]:
+                    print(f"    – {name}")
+            if summary.get("errors"):
+                print(f"  ⚠ {len(summary['errors'])} error(s):")
+                for name, msg in summary["errors"].items():
+                    print(f"    – {name}: {msg}")
         else:
             from hermes_cli.skills_hub import skills_command
             skills_command(args)

@@ -40,10 +40,11 @@ def test_warns_when_skill_creation_narrated_without_tool_call():
         {"role": "assistant", "content": "ok"},  # no tool_calls
     ]
     final = "I created the hello-haiku skill in the writing category. Done."
-    agent._maybe_warn_hallucinated_tool_action(final, messages)
+    result = agent._maybe_warn_hallucinated_tool_action(final, messages)
     assert agent._vprint.called
     msg = agent._vprint.call_args[0][0]
     assert "silent failure" in msg.lower()
+    assert result is True  # A3: callers can use this to retry
 
 
 def test_no_warning_when_tool_call_actually_happened():
@@ -59,8 +60,9 @@ def test_no_warning_when_tool_call_actually_happened():
         {"role": "assistant", "content": "I created the hello-haiku skill."},
     ]
     final = "I created the hello-haiku skill."
-    agent._maybe_warn_hallucinated_tool_action(final, messages)
+    result = agent._maybe_warn_hallucinated_tool_action(final, messages)
     assert not agent._vprint.called
+    assert result is False  # A3: no retry needed
 
 
 def test_no_warning_for_unrelated_chitchat():
@@ -221,3 +223,62 @@ def test_japanese_chitchat_does_not_warn():
     ]
     agent._maybe_warn_hallucinated_tool_action("こんにちは!", messages)
     assert not agent._vprint.called
+
+
+# ── A3: detector returns bool so the agent loop can retry ──────────────
+
+def test_detector_returns_true_on_hallucination():
+    """A3 contract: callers (run_conversation) need a bool back so they
+    can decide whether to inject a correction message and retry."""
+    agent = _make_agent_stub()
+    messages = [
+        {"role": "user", "content": "save my color"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    assert agent._maybe_warn_hallucinated_tool_action(
+        "I saved that color to memory.", messages,
+    ) is True
+
+
+def test_detector_returns_false_on_clean_response():
+    agent = _make_agent_stub()
+    messages = [
+        {"role": "user", "content": "what is 2+2?"},
+        {"role": "assistant", "content": "4"},
+    ]
+    assert agent._maybe_warn_hallucinated_tool_action("4", messages) is False
+
+
+def test_detector_returns_false_when_tool_call_present():
+    agent = _make_agent_stub()
+    messages = [
+        {"role": "user", "content": "remember blue"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "1", "function": {"name": "memory"}}],
+        },
+        {"role": "tool", "content": '{"success": true}'},
+        {"role": "assistant", "content": "I saved blue to memory."},
+    ]
+    assert agent._maybe_warn_hallucinated_tool_action(
+        "I saved blue to memory.", messages,
+    ) is False
+
+
+def test_detector_returns_false_on_empty_response():
+    agent = _make_agent_stub()
+    assert agent._maybe_warn_hallucinated_tool_action("", []) is False
+
+
+def test_detector_strips_think_blocks_before_returning():
+    """Action verbs inside <think> are not real claims — should return False."""
+    agent = _make_agent_stub()
+    messages = [
+        {"role": "user", "content": "what's 2+2?"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    assert agent._maybe_warn_hallucinated_tool_action(
+        "<think>I should have created a skill for this</think>4",
+        messages,
+    ) is False

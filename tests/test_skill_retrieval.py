@@ -118,3 +118,88 @@ def test_score_skills_idf_downweights_common_terms():
     # 'alpha' is unique → high IDF
     scored = score_skills("alpha", skills)
     assert scored[0][0]["name"] == "a"
+
+
+# ── A2: usage_boost integration ─────────────────────────────────────────
+
+@pytest.fixture
+def usage_home(tmp_path, monkeypatch):
+    """Point HERMES_HOME at a clean tmp dir so the in-process metrics
+    helper writes/reads our isolated .usage.json instead of the real one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "skills").mkdir()
+    import importlib
+    import agent.skill_metrics
+    importlib.reload(agent.skill_metrics)
+    yield tmp_path
+    importlib.reload(agent.skill_metrics)
+
+
+def test_usage_boost_promotes_frequently_used_skill(usage_home):
+    """Two skills tied on TF-IDF score — the one with more usage views
+    should rank first when usage_boost=True."""
+    from agent.skill_metrics import record_view
+    skills = [
+        {"name": "rare-skill", "description": "do thing alpha beta"},
+        {"name": "popular-skill", "description": "do thing alpha beta"},
+    ]
+    for _ in range(10):
+        record_view("popular-skill")
+
+    boosted = topk_skills("alpha beta", skills, k=2, usage_boost=True)
+    assert boosted[0]["name"] == "popular-skill"
+
+    plain = topk_skills("alpha beta", skills, k=2, usage_boost=False)
+    # Without boost, the order is whatever score_skills returns (tie → input order)
+    assert {s["name"] for s in plain} == {"rare-skill", "popular-skill"}
+
+
+def test_usage_boost_preserves_query_relevance(usage_home):
+    """Heavy usage should NOT pull an irrelevant skill above a clearly
+    matching one — relevance dominates, boost only breaks ties."""
+    from agent.skill_metrics import record_view
+    skills = [
+        {"name": "git-bisect", "description": "git regression bisect commits"},
+        {"name": "popular-irrelevant", "description": "pizza recipe pasta"},
+    ]
+    for _ in range(50):
+        record_view("popular-irrelevant")
+
+    out = topk_skills("git regression", skills, k=1, usage_boost=True)
+    assert out[0]["name"] == "git-bisect"
+
+
+def test_usage_boost_default_is_on():
+    """The wire-up is opt-out, not opt-in — keyword arg defaults True."""
+    import inspect
+    sig = inspect.signature(topk_skills)
+    assert sig.parameters["usage_boost"].default is True
+
+
+def test_usage_boost_handles_missing_metrics_gracefully(tmp_path, monkeypatch):
+    """If the metrics file doesn't exist or load_metrics blows up, the
+    plain TF-IDF order must still come back — no exception."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    skills = [
+        {"name": "a", "description": "alpha"},
+        {"name": "b", "description": "beta"},
+    ]
+    out = topk_skills("alpha", skills, k=1, usage_boost=True)
+    assert out[0]["name"] == "a"
+
+
+def test_usage_boost_zero_views_keeps_floor(usage_home):
+    """A new skill with 0 views still gets the +1 floor multiplier so it
+    isn't permanently locked out by older popular skills."""
+    from agent.skill_metrics import record_view
+    skills = [
+        {"name": "old-popular", "description": "alpha topic"},
+        {"name": "new-skill", "description": "alpha topic"},
+    ]
+    # old-popular has been viewed a few times
+    for _ in range(3):
+        record_view("old-popular")
+
+    # The boost is log(1+3)+1 ≈ 2.39 vs 1.0 — old wins, but new isn't 0
+    out = topk_skills("alpha topic", skills, k=2, usage_boost=True)
+    assert "new-skill" in [s["name"] for s in out]

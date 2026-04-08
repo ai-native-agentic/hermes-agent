@@ -188,18 +188,54 @@ Responses from models:"""
 _debug = DebugSession("moa_tools", env_var="MOA_TOOLS_DEBUG")
 
 
-def _construct_aggregator_prompt(system_prompt: str, responses: List[str]) -> str:
+def _construct_aggregator_prompt(
+    system_prompt: str,
+    responses: List[str],
+    reference_models: Optional[List[str]] = None,
+) -> str:
     """
-    Construct the final system prompt for the aggregator including all model responses.
-    
+    Construct the final system prompt for the aggregator including all model
+    responses, optionally annotated with each reference model's historical
+    reliability score from agent.moa_metrics.
+
+    The reliability annotation is the A1 wire-up: it lets the aggregator
+    weigh advice from a model that has empirically performed against
+    advice from a flaky one, instead of treating every reference equally.
+    Backwards-compatible — if reference_models is None or no metrics
+    exist, the prompt is built exactly as before.
+
     Args:
-        system_prompt (str): Base system prompt for aggregation
-        responses (List[str]): List of responses from reference models
-        
+        system_prompt: Base aggregation instruction text.
+        responses: One response per reference model, in the same order.
+        reference_models: Optional model names paired with responses.
+
     Returns:
-        str: Complete system prompt with enumerated responses
+        Complete system prompt with enumerated responses (and reliability
+        annotations when available).
     """
-    response_text = "\n".join([f"{i+1}. {response}" for i, response in enumerate(responses)])
+    weights: Dict[str, float] = {}
+    if reference_models:
+        try:
+            from agent.moa_metrics import derive_weights
+            weights = derive_weights(reference_models)
+        except Exception:
+            weights = {}
+
+    lines = []
+    for i, response in enumerate(responses):
+        if reference_models and i < len(reference_models):
+            model_name = reference_models[i]
+            w = weights.get(model_name)
+            if w is not None:
+                lines.append(
+                    f"{i+1}. [{model_name} — historical reliability {w:.2f}] {response}"
+                )
+                continue
+            lines.append(f"{i+1}. [{model_name}] {response}")
+        else:
+            lines.append(f"{i+1}. {response}")
+
+    response_text = "\n".join(lines)
     return f"{system_prompt}\n\n{response_text}"
 
 
@@ -431,13 +467,17 @@ async def mixture_of_agents_tool(
             for model in ref_models
         ])
         
-        # Separate successful and failed responses
+        # Separate successful and failed responses, keeping the model
+        # name aligned with each response so the aggregator prompt can
+        # annotate them with historical reliability (A1 wire-up).
         successful_responses = []
+        successful_model_names = []
         failed_models = []
-        
+
         for model_name, content, success in model_results:
             if success:
                 successful_responses.append(content)
+                successful_model_names.append(model_name)
             else:
                 failed_models.append(model_name)
         
@@ -460,8 +500,9 @@ async def mixture_of_agents_tool(
         # Layer 2: Aggregate responses using the aggregator model
         logger.info("Layer 2: Synthesizing final response...")
         aggregator_system_prompt = _construct_aggregator_prompt(
-            AGGREGATOR_SYSTEM_PROMPT, 
-            successful_responses
+            AGGREGATOR_SYSTEM_PROMPT,
+            successful_responses,
+            reference_models=successful_model_names,
         )
         
         final_response = await _run_aggregator_model(

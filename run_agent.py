@@ -3063,7 +3063,7 @@ class AIAgent:
         self,
         final_response: str,
         messages: list,
-    ) -> None:
+    ) -> bool:
         """Warn the user when the model narrates a tool action it never made.
 
         Triggered when the assistant's final reply contains an action verb
@@ -3075,18 +3075,24 @@ class AIAgent:
 
         This is a best-effort heuristic: it only prints to stderr (so it
         never reaches the model) and never blocks the response.
+
+        Returns:
+            True when a hallucination was detected and the warning fired,
+            False otherwise. Callers can use the return value to decide
+            whether to inject a correction message and retry the turn
+            (see A3 wire-up in run_conversation).
         """
         if not final_response:
-            return
+            return False
         text = final_response.lower()
         # Strip <think>...</think> blocks first — reasoning text often
         # discusses tool plans without being a real claim.
         import re as _re
         text = _re.sub(r"<think>.*?</think>", " ", text, flags=_re.DOTALL)
         if not any(verb in text for verb in self._HALLUCINATION_VERBS):
-            return
+            return False
         if not any(obj in text for obj in self._HALLUCINATION_OBJECTS):
-            return
+            return False
         # Did this turn actually emit any tool calls? Walk back through the
         # current turn's assistant messages.
         saw_tool_call = False
@@ -3101,7 +3107,7 @@ class AIAgent:
                 saw_tool_call = True
                 break
         if saw_tool_call:
-            return
+            return False
         # Warn the user (CLI / log) but never inject this back into messages.
         # Include a concrete retry path so the user can immediately re-run the
         # turn with an explicit "use the tool" instruction. The session id is
@@ -3127,6 +3133,7 @@ class AIAgent:
         except Exception:
             pass
         logger.warning("hallucinated tool action narration: %s", final_response[:200])
+        return True
 
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.
@@ -7103,6 +7110,7 @@ class AIAgent:
         self._invalid_tool_retries = 0
         self._invalid_json_retries = 0
         self._empty_content_retries = 0
+        self._hallucination_retry_used = False
         self._incomplete_scratchpad_retries = 0
         self._codex_incomplete_retries = 0
         self._last_content_with_tools = None
@@ -9078,7 +9086,42 @@ class AIAgent:
                     # corresponding tool_call in this entire turn, warn the user.
                     # The CLI prints this; we never inject it back to the model
                     # (so we don't accidentally encourage retries on real success).
-                    self._maybe_warn_hallucinated_tool_action(final_response, messages)
+                    _hallucinated = self._maybe_warn_hallucinated_tool_action(
+                        final_response, messages
+                    )
+
+                    # ── A3: hallucination → auto-retry once per turn ─────────
+                    # When the warning fires AND we haven't retried yet for
+                    # this turn, append a stern correction as a user message
+                    # and continue the loop so the model gets one more
+                    # chance to actually emit the tool call. Capped at one
+                    # retry per turn to prevent infinite loops if the model
+                    # keeps narrating instead of acting.
+                    if _hallucinated and not getattr(self, "_hallucination_retry_used", False):
+                        self._hallucination_retry_used = True
+                        if not self.quiet_mode:
+                            self._vprint(
+                                f"{self.log_prefix}🔁 Auto-retry: forcing tool call after hallucination",
+                                force=True,
+                            )
+                        # Persist the assistant's narration so it's visible
+                        # in the trajectory + then nudge it to actually act.
+                        messages.append(
+                            self._build_assistant_message(assistant_message, finish_reason)
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Your previous reply described an action you did not "
+                                "actually perform — no tool call was emitted. "
+                                "Now ACTUALLY call the relevant tool. Do not narrate, "
+                                "do not summarize. Just emit the tool call."
+                            ),
+                        })
+                        # Skip the normal "no content after think" recovery
+                        # branch — we want to go straight back to the LLM
+                        # with the corrected user message.
+                        continue
 
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):

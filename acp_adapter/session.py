@@ -440,9 +440,13 @@ class SessionManager:
         model_cfg = config.get("model")
         default_model = ""
         config_provider = None
+        config_max_tokens = None
         if isinstance(model_cfg, dict):
             default_model = str(model_cfg.get("default") or default_model)
             config_provider = model_cfg.get("provider")
+            mt = model_cfg.get("max_tokens")
+            if isinstance(mt, int) and mt > 0:
+                config_max_tokens = mt
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
@@ -453,6 +457,8 @@ class SessionManager:
             "session_id": session_id,
             "model": model or default_model,
         }
+        if config_max_tokens is not None:
+            kwargs["max_tokens"] = config_max_tokens
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

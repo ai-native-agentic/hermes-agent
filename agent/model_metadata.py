@@ -471,6 +471,12 @@ def fetch_endpoint_model_metadata(
                 pricing = _extract_pricing(model)
                 if pricing:
                     entry["pricing"] = pricing
+                # Capability flags (lunark and similar OpenAI-compatible servers
+                # expose these as top-level booleans on each model entry).
+                if isinstance(model.get("tool_calling"), bool):
+                    entry["tool_calling"] = model["tool_calling"]
+                if isinstance(model.get("reasoning"), bool):
+                    entry["reasoning"] = model["reasoning"]
                 _add_model_aliases(cache, model_id, entry)
 
             # If this is a llama.cpp server, query /props for actual allocated context

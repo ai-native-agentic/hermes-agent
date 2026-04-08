@@ -156,6 +156,7 @@ class InsightsEngine:
         tools = self._compute_tool_breakdown(tool_usage)
         activity = self._compute_activity_patterns(sessions)
         top_sessions = self._compute_top_sessions(sessions)
+        skills = self._compute_skills_growth(cutoff)
 
         return {
             "days": days,
@@ -168,6 +169,71 @@ class InsightsEngine:
             "tools": tools,
             "activity": activity,
             "top_sessions": top_sessions,
+            "skills": skills,
+        }
+
+    def _compute_skills_growth(self, cutoff: float) -> Dict[str, Any]:
+        """Count user-created skills (mtime-based) for the active HERMES_HOME.
+
+        The agent's "self-learning" claim hinges on skill_manage actually
+        running, but a model that only narrates "I created X" without
+        emitting tool_calls leaves the skills dir empty. This metric makes
+        that gap visible: 0 skills created in N days = self-learning loop
+        is not firing for the active model.
+
+        Returns:
+            {"created_in_window": int, "total_user_skills": int,
+             "window_days": int, "skills_dir_exists": bool}
+        """
+        import os
+        import glob
+
+        from hermes_constants import get_hermes_home
+
+        skills_root = get_hermes_home() / "skills"
+        if not skills_root.exists():
+            return {
+                "created_in_window": 0,
+                "total_user_skills": 0,
+                "skills_dir_exists": False,
+            }
+
+        # Bundled skills are listed in .bundled_manifest as
+        # `<skill-basename>:<hash>` (one per line, no category prefix).
+        # Anything with a SKILL.md whose directory basename is NOT in that
+        # set is treated as user/agent-created.
+        bundled = set()
+        manifest = skills_root / ".bundled_manifest"
+        if manifest.exists():
+            try:
+                with open(manifest) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        name = line.split(":", 1)[0].strip()
+                        if name:
+                            bundled.add(name)
+            except Exception:
+                pass
+
+        created_in_window = 0
+        total_user = 0
+        for skill_md in glob.glob(str(skills_root / "*" / "*" / "SKILL.md")):
+            skill_basename = os.path.basename(os.path.dirname(skill_md))
+            if skill_basename in bundled:
+                continue
+            total_user += 1
+            try:
+                if os.path.getmtime(skill_md) >= cutoff:
+                    created_in_window += 1
+            except OSError:
+                pass
+
+        return {
+            "created_in_window": created_in_window,
+            "total_user_skills": total_user,
+            "skills_dir_exists": True,
         }
 
     # =========================================================================
@@ -731,6 +797,22 @@ class InsightsEngine:
             lines.append("  " + "─" * 56)
             for ts in report["top_sessions"]:
                 lines.append(f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})")
+            lines.append("")
+
+        # Self-learning growth — surfaces whether the skill_manage loop is
+        # actually firing for this profile/model. A persistent 0 here means
+        # the agent isn't building up procedural memory even if it claims to.
+        skills = report.get("skills") or {}
+        if skills.get("skills_dir_exists"):
+            lines.append("  🌱 Self-Learning")
+            lines.append("  " + "─" * 56)
+            created = skills.get("created_in_window", 0)
+            total = skills.get("total_user_skills", 0)
+            days = report.get("days", 30)
+            lines.append(f"  Skills created (last {days}d):  {created}")
+            lines.append(f"  User-created total:           {total}")
+            if created == 0 and total == 0:
+                lines.append("  ⚠ No user/agent skills yet — self-learning loop has not fired.")
             lines.append("")
 
         return "\n".join(lines)

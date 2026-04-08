@@ -912,7 +912,33 @@ class AIAgent:
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
-        
+
+        # Capability gate: if the active /v1/models advertises tool_calling=False
+        # for this model, drop tools entirely. Sending function definitions to
+        # a model that can't emit them just bloats the prompt and produces the
+        # silent-failure narration we now warn about.
+        if self.tools and self.model:
+            try:
+                from agent.model_metadata import fetch_endpoint_model_metadata
+                if self.base_url:
+                    _meta_cache = fetch_endpoint_model_metadata(
+                        self.base_url, api_key=self.api_key or ""
+                    )
+                    _meta = _meta_cache.get(self.model) or _meta_cache.get(
+                        self.model.split("/", 1)[-1]
+                    )
+                    if isinstance(_meta, dict) and _meta.get("tool_calling") is False:
+                        if not self.quiet_mode:
+                            print(
+                                f"🛠️  {self.model} advertises tool_calling=false at "
+                                f"{self.base_url} — dropping all tools to avoid "
+                                "silent failure narration."
+                            )
+                        self.tools = []
+            except Exception:
+                # Best effort — never block startup on a metadata probe failure
+                pass
+
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
         if self.tools:
@@ -2979,6 +3005,78 @@ class AIAgent:
             else:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
         return unique if len(unique) < len(tool_calls) else tool_calls
+
+    # Action verbs / object phrases that strongly suggest the model is
+    # claiming to have performed a tool-mediated action (created a file,
+    # saved a memory, ran a command). Used by the silent-failure detector.
+    _HALLUCINATION_VERBS = (
+        "created", "i've created", "i have created",
+        "saved", "i've saved", "i have saved",
+        "added", "i've added", "i have added",
+        "wrote", "i've written", "i have written",
+        "updated", "i've updated", "i have updated",
+        "stored", "i've stored", "i have stored",
+        "ran", "executed", "i ran", "i executed",
+    )
+    _HALLUCINATION_OBJECTS = (
+        "skill", "memory", "todo", "file", "command", "script",
+    )
+
+    def _maybe_warn_hallucinated_tool_action(
+        self,
+        final_response: str,
+        messages: list,
+    ) -> None:
+        """Warn the user when the model narrates a tool action it never made.
+
+        Triggered when the assistant's final reply contains an action verb
+        and a tool-mediated object (e.g. "I created the skill") but the
+        current turn produced no tool_calls at all. The classic case is a
+        small/medium model that knows the SHAPE of what to say but can't
+        actually emit a function call — silently leaving the side-effect
+        undone while telling the user it succeeded.
+
+        This is a best-effort heuristic: it only prints to stderr (so it
+        never reaches the model) and never blocks the response.
+        """
+        if not final_response:
+            return
+        text = final_response.lower()
+        # Strip <think>...</think> blocks first — reasoning text often
+        # discusses tool plans without being a real claim.
+        import re as _re
+        text = _re.sub(r"<think>.*?</think>", " ", text, flags=_re.DOTALL)
+        if not any(verb in text for verb in self._HALLUCINATION_VERBS):
+            return
+        if not any(obj in text for obj in self._HALLUCINATION_OBJECTS):
+            return
+        # Did this turn actually emit any tool calls? Walk back through the
+        # current turn's assistant messages.
+        saw_tool_call = False
+        for msg in reversed(messages):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if role == "user":
+                # Reached the start of this turn — stop scanning
+                break
+            if role == "assistant" and msg.get("tool_calls"):
+                saw_tool_call = True
+                break
+        if saw_tool_call:
+            return
+        # Warn the user (CLI / log) but never inject this back into messages
+        warning = (
+            f"{self.log_prefix}⚠ Possible silent failure: the model said it "
+            "performed an action but no tool was actually called. "
+            "Verify the side effect (e.g. check ~/.hermes/skills/, ~/.hermes/memory.md) "
+            "before trusting the response."
+        )
+        try:
+            self._vprint(warning, force=True)
+        except Exception:
+            pass
+        logger.warning("hallucinated tool action narration: %s", final_response[:200])
 
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.
@@ -8904,7 +9002,15 @@ class AIAgent:
                 else:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
-                    
+
+                    # ── Silent failure / hallucinated tool action detection ──
+                    # If the model says something like "I created the skill" or
+                    # "I saved that to memory" but we never actually saw a
+                    # corresponding tool_call in this entire turn, warn the user.
+                    # The CLI prints this; we never inject it back to the model
+                    # (so we don't accidentally encourage retries on real success).
+                    self._maybe_warn_hallucinated_tool_action(final_response, messages)
+
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):
                         # If the previous turn already delivered real content alongside

@@ -43,20 +43,18 @@ EXTRACTORS = {
     "word": extract_word,
 }
 
-# Reuse the 100 hard prompts from moa_hard
-import importlib.util
-spec = importlib.util.spec_from_file_location(
-    "moa_hard",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "moa_hard.py"),
-)
-_moa_hard = importlib.util.module_from_spec(spec)
-# Prevent moa_hard from running its main when imported
-_moa_hard.__name__ = "moa_hard_imported"
-try:
-    spec.loader.exec_module(_moa_hard)
-except SystemExit:
-    pass
-P = _moa_hard.P
+# Reuse the 100 hard prompts from moa_hard. moa_hard runs its main on import
+# (no __main__ guard) which would re-execute the entire matrix; we only want
+# the prompt list, so we exec the file with a stubbed environment that
+# short-circuits the heavy work.
+_moa_hard_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moa_hard.py")
+with open(_moa_hard_path) as _f:
+    _src = _f.read()
+# Cut at the first `print(f"[v2]` line, which is right after P is built.
+_cut = _src.index('print(f"[v2]')
+_ns = {"__file__": _moa_hard_path, "__name__": "moa_hard_loader"}
+exec(compile(_src[:_cut], _moa_hard_path, "exec"), _ns)
+P = _ns["P"]
 print(f"[moa-agg] {len(P)} prompts × {len(REFERENCE_MODELS)} refs + 1 aggregator", file=sys.stderr)
 
 

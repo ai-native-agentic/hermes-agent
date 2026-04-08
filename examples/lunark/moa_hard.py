@@ -51,7 +51,9 @@ arith = [
     ("sum of first 10 even numbers", "110"),
     ("number of diagonals in an octagon", "20"),
     ("perimeter of a square with side 17", "68"),
-    ("area of a circle with radius 5 (use pi=3.14159)", "78"),  # accept ~78
+    # Use a clearer spec so models don't substitute their own π value.
+    # Most models output 78.54 (pi*25 ≈ 78.5398...) — we accept that.
+    ("the area of a circle with radius 5, rounded to two decimal places", "78.54"),
     ("volume of a cube with edge 6", "216"),
     ("17 + 28 + 39 + 16", "100"),
     ("250 / 5 + 30 * 2", "110"),

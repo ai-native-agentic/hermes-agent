@@ -47,6 +47,75 @@ async def test_reference_model_retry_warnings_avoid_exc_info_until_terminal_fail
     assert err.call_args.kwargs.get("exc_info") is True
 
 
+def test_resolve_models_falls_back_to_openrouter_defaults(monkeypatch):
+    """When config.yaml has no `moa:` section, the resolver returns the
+    hard-coded OpenRouter REFERENCE_MODELS / AGGREGATOR_MODEL constants
+    so backward compatibility is preserved."""
+    monkeypatch.setattr(moa, "_load_moa_config", lambda: {})
+    refs, agg, ref_t, agg_t, enable_reasoning = moa._resolve_models()
+    assert refs == moa.REFERENCE_MODELS
+    assert agg == moa.AGGREGATOR_MODEL
+    assert ref_t == moa.REFERENCE_TEMPERATURE
+    assert agg_t == moa.AGGREGATOR_TEMPERATURE
+    # OpenRouter is the default → reasoning extra_body enabled
+    assert enable_reasoning is True
+
+
+def test_resolve_models_uses_lunark_config(monkeypatch):
+    """Custom provider config: should swap reference list, aggregator, and
+    disable the OpenRouter-specific reasoning extra_body by default."""
+    monkeypatch.setattr(moa, "_load_moa_config", lambda: {
+        "provider": "custom",
+        "base_url": "https://llm.lunark.ai/v1",
+        "api_key_env": "LUNARK_API_KEY",
+        "reference_models": ["Qwen3.5-27B", "Qwen2.5-32B-Instruct", "Gemma-4-E4B-it"],
+        "aggregator_model": "Qwen3-32B",
+    })
+    refs, agg, _, _, enable_reasoning = moa._resolve_models()
+    assert refs == ["Qwen3.5-27B", "Qwen2.5-32B-Instruct", "Gemma-4-E4B-it"]
+    assert agg == "Qwen3-32B"
+    # Custom provider → no extra_body reasoning by default
+    assert enable_reasoning is False
+
+
+def test_check_moa_requirements_uses_configured_api_key_env(monkeypatch):
+    """For a custom provider, check_moa_requirements should look at the
+    env var named in moa.api_key_env, not OPENROUTER_API_KEY."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("LUNARK_API_KEY", raising=False)
+
+    monkeypatch.setattr(moa, "_load_moa_config", lambda: {
+        "provider": "custom",
+        "api_key_env": "LUNARK_API_KEY",
+    })
+
+    # No key set → False
+    assert moa.check_moa_requirements() is False
+
+    monkeypatch.setenv("LUNARK_API_KEY", "vllm-local")
+    assert moa.check_moa_requirements() is True
+
+
+def test_get_moa_configuration_reflects_active_provider(monkeypatch):
+    """get_moa_configuration() should expose the active provider, models,
+    and capability flags so callers can introspect the runtime config."""
+    monkeypatch.setattr(moa, "_load_moa_config", lambda: {
+        "provider": "custom",
+        "base_url": "https://llm.lunark.ai/v1",
+        "reference_models": ["Qwen3.5-27B"],
+        "aggregator_model": "Qwen3-32B",
+        "reference_temperature": 0.5,
+        "aggregator_temperature": 0.3,
+    })
+    info = moa.get_moa_configuration()
+    assert info["provider"] == "custom"
+    assert info["reference_models"] == ["Qwen3.5-27B"]
+    assert info["aggregator_model"] == "Qwen3-32B"
+    assert info["reference_temperature"] == 0.5
+    assert info["aggregator_temperature"] == 0.3
+    assert info["enable_reasoning_extra_body"] is False
+
+
 @pytest.mark.asyncio
 async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

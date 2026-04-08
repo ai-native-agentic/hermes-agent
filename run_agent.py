@@ -2826,9 +2826,22 @@ class AIAgent:
                 )
                 if toolset
             }
+            # Pull skills.retrieval block from CLI_CONFIG (if any). Default
+            # is mode="all" which is a perfect no-op for backward compat.
+            _retrieval_cfg = None
+            try:
+                from hermes_cli.config import load_config
+                _cfg = load_config() or {}
+                _skills_cfg = _cfg.get("skills") or {}
+                _retrieval_cfg = _skills_cfg.get("retrieval") if isinstance(_skills_cfg, dict) else None
+            except Exception:
+                _retrieval_cfg = None
+
             skills_prompt = build_skills_system_prompt(
                 available_tools=self.valid_tool_names,
                 available_toolsets=avail_toolsets,
+                user_query=getattr(self, "_current_user_query", "") or None,
+                retrieval_config=_retrieval_cfg,
             )
         else:
             skills_prompt = ""
@@ -7039,6 +7052,25 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
+        # Stash the user query for the system-prompt builder. Used by the
+        # opt-in skills.retrieval (top-k) path so the injected skill index
+        # can be filtered to whatever is most relevant for THIS turn.
+        # Falls back to "" so the build path stays string-typed.
+        self._current_user_query = user_message if isinstance(user_message, str) else ""
+
+        # When skills.retrieval mode is "topk", the system prompt depends on
+        # the per-turn user query, so we must invalidate the cached prompt
+        # so _build_system_prompt is recomputed for THIS turn. The Anthropic
+        # cache prefix will miss for these sessions, but that's an explicit
+        # opt-in trade-off documented in the retrieval config block.
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config() or {}
+            _retr = (_cfg.get("skills") or {}).get("retrieval") or {}
+            if isinstance(_retr, dict) and str(_retr.get("mode", "all")).lower() == "topk":
+                self._invalidate_system_prompt()
+        except Exception:
+            pass
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         

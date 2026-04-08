@@ -505,6 +505,8 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    user_query: str | None = None,
+    retrieval_config: dict | None = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -519,6 +521,19 @@ def build_skills_system_prompt(
     scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
+
+    Top-k retrieval (opt-in via config.yaml):
+
+        skills:
+          retrieval:
+            mode: topk        # default "all" preserves backward compat
+            top_k: 3
+            min_score: 0.05
+
+    When ``mode == "topk"`` AND a non-empty ``user_query`` is supplied, the
+    final skill list is filtered to the top-k most relevant skills using a
+    dependency-free TF-IDF ranker (see agent/skill_retrieval.py). All other
+    code paths and the LRU/disk caches behave exactly as before.
     """
     hermes_home = get_hermes_home()
     skills_dir = hermes_home / "skills"
@@ -526,6 +541,18 @@ def build_skills_system_prompt(
 
     if not skills_dir.exists() and not external_dirs:
         return ""
+
+    # Resolve retrieval mode early so it participates in the cache key.
+    _retrieval = retrieval_config or {}
+    _mode = str(_retrieval.get("mode", "all")).lower()
+    _top_k = int(_retrieval.get("top_k", 3) or 0)
+    _min_score = float(_retrieval.get("min_score", 0.0) or 0.0)
+    _retrieval_active = (
+        _mode == "topk"
+        and _top_k > 0
+        and isinstance(user_query, str)
+        and user_query.strip()
+    )
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
@@ -535,12 +562,19 @@ def build_skills_system_prompt(
         or os.environ.get("HERMES_SESSION_PLATFORM")
         or ""
     )
+    # When retrieval is active the result depends on the user query, so the
+    # cache key must include a fingerprint of the query — otherwise back-to-
+    # back turns with different queries would all hit the same cached prompt.
+    _query_key = ""
+    if _retrieval_active:
+        _query_key = f"topk:{_top_k}:{_min_score}:{hash((user_query or '').strip().lower())}"
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
+        _query_key,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -674,6 +708,31 @@ def build_skills_system_prompt(
                 category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
+
+    # ── Top-k retrieval (opt-in) ──────────────────────────────────────
+    # When enabled, score every (name, description) pair against the user
+    # query and keep only the top-k matches. Active retrieval RESPECTS
+    # zero-match results: if nothing clears the min_score bar we emit an
+    # empty skills section rather than silently falling back to "inject
+    # all" — that fallback would defeat the whole point of opting in.
+    if _retrieval_active and skills_by_category:
+        try:
+            from agent.skill_retrieval import topk_skills
+
+            flat: list[dict] = []
+            for cat, pairs in skills_by_category.items():
+                for name, desc in pairs:
+                    flat.append({"name": name, "description": desc, "category": cat})
+            picks = topk_skills(user_query, flat, k=_top_k, min_score=_min_score)
+            kept_names = {p["name"] for p in picks}
+            skills_by_category = {
+                cat: [(n, d) for n, d in pairs if n in kept_names]
+                for cat, pairs in skills_by_category.items()
+            }
+            # Drop now-empty categories
+            skills_by_category = {k: v for k, v in skills_by_category.items() if v}
+        except Exception as exc:
+            logger.debug("skill retrieval failed, falling back to full index: %s", exc)
 
     if not skills_by_category:
         result = ""

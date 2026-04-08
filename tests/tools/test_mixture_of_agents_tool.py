@@ -149,6 +149,31 @@ def test_aggregator_prompt_injects_reliability_scores(monkeypatch):
     assert "weird answer" in out
 
 
+def test_aggregator_prompt_includes_weighting_policy_when_weights_present(monkeypatch):
+    """N-A1: when reliability annotations exist, the aggregator also gets
+    explicit guidance to prefer majority agreement over a high-reliability
+    lone dissent. Without this guidance, A1 alone caused regressions on
+    tied prompts (see log-03 in the live G3 re-run)."""
+    monkeypatch.setattr(
+        "agent.moa_metrics.derive_weights",
+        lambda names: {"a": 0.5, "b": 0.3, "c": 0.2},
+    )
+    out = moa._construct_aggregator_prompt(
+        "BASE", ["x", "y", "z"], reference_models=["a", "b", "c"]
+    )
+    assert "Weighting policy" in out
+    assert "majority" in out.lower()
+    assert "tie-breaker" in out.lower() or "tie breaker" in out.lower()
+
+
+def test_aggregator_prompt_omits_policy_without_weights():
+    """No weights → no policy section, prompt stays terse."""
+    out = moa._construct_aggregator_prompt(
+        "BASE", ["a", "b"]
+    )
+    assert "Weighting policy" not in out
+
+
 def test_aggregator_prompt_handles_metrics_failure_gracefully(monkeypatch):
     """If agent.moa_metrics raises (e.g. corrupt usage file), the
     aggregator prompt must still build cleanly without reliability

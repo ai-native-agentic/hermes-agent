@@ -84,6 +84,26 @@ def record_rating(
     except OSError as exc:
         logger.debug("feedback record failed: %s", exc)
         return False
+
+    # Bridge: a thumbs-down with concrete user/assistant context turns
+    # into an error lesson so the next prompt that overlaps with this
+    # one can pre-emptively warn the model. This is the closed loop
+    # equivalent of "the user told us this answer was bad — remember it".
+    # Best-effort, never raises.
+    if norm == "down" and user_message and assistant_response:
+        try:
+            from agent.error_lessons import record_error
+            record_error(
+                tool_name="(user_thumbs_down)",
+                error_message=(
+                    f"User rated this response negative."
+                    + (f" Reason: {reason}" if reason else "")
+                    + f" Response excerpt: {assistant_response[:200]}"
+                ),
+                user_query=user_message,
+            )
+        except Exception:
+            pass
     return True
 
 

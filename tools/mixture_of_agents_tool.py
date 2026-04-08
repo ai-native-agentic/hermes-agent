@@ -236,6 +236,28 @@ def _construct_aggregator_prompt(
             lines.append(f"{i+1}. {response}")
 
     response_text = "\n".join(lines)
+
+    # N-A1 policy refinement — when reliability scores are present, also
+    # tell the aggregator how to use them. The original wire-up surfaced
+    # the numbers but didn't say what to do with them, and on tied prompts
+    # (2:1 reference splits) the aggregator could side with the lone
+    # high-reliability dissent and lose to plain majority vote. The
+    # explicit policy below biases toward majority while still letting
+    # reliability break true ties.
+    if weights:
+        policy = (
+            "\n\nWeighting policy:\n"
+            "- If references agree by majority, GO WITH THE MAJORITY even if "
+            "the dissenting model has higher reliability — agreement across "
+            "diverse models is a stronger signal than a single model's track "
+            "record.\n"
+            "- Use reliability scores as a tie-breaker when references split "
+            "evenly (e.g. 1-1-1 or 2-2).\n"
+            "- Treat reliability < 0.20 as weak supporting evidence only; "
+            "never let it override majority agreement among other models."
+        )
+        return f"{system_prompt}{policy}\n\n{response_text}"
+
     return f"{system_prompt}\n\n{response_text}"
 
 

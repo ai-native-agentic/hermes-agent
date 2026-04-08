@@ -178,6 +178,8 @@ EXTRACTORS = {
 JOBS = [(m, pid, prompt, kind, exp) for m in MODELS for pid, prompt, kind, exp in P]
 results = {}
 results_lock = threading.Lock()
+JOBS_FILE = "/tmp/acp_moa_v2_jobs.jsonl"
+open(JOBS_FILE, "w").close()
 
 
 def run_one(job):
@@ -208,15 +210,21 @@ def run_one(job):
     norm_exp = normalize_for_compare(exp, kind)
     norm_got = normalize_for_compare(extracted, kind)
     correct = norm_got == norm_exp
+    rec = {
+        "model": model,
+        "id": pid,
+        "kind": kind,
+        "extracted": extracted,
+        "norm": norm_got,
+        "expected": exp,
+        "correct": correct,
+        "elapsed": elapsed,
+        "raw_tail": msg.strip()[-200:],
+    }
     with results_lock:
-        results[(model, pid)] = {
-            "extracted": extracted,
-            "norm": norm_got,
-            "expected": exp,
-            "correct": correct,
-            "elapsed": elapsed,
-            "raw": msg.strip()[-100:],
-        }
+        results[(model, pid)] = rec
+        with open(JOBS_FILE, "a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     n = len(results)
     if n % 40 == 0:
         print(f"  [{n}/{len(JOBS)}]", file=sys.stderr)

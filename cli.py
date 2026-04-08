@@ -3623,7 +3623,58 @@ class HermesCLI:
         print(f"(^_^)b Undid {removed_count} message(s). Removed: \"{removed_msg[:60]}{'...' if len(removed_msg) > 60 else ''}\"")
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
-    
+
+    def _handle_rate_command(self, cmd_original: str):
+        """Record explicit user feedback on the most recent assistant turn.
+
+        Usage::
+
+            /rate up                       # thumbs up, no reason
+            /rate down "wrong answer"      # thumbs down + reason
+            /rate +                        # short alias
+            /rate -                        # short alias
+
+        Persisted to ``$HERMES_HOME/feedback.jsonl`` (see agent/feedback.py).
+        """
+        parts = cmd_original.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            print("Usage: /rate up|down [reason]")
+            return
+        rating = parts[1]
+        reason = parts[2] if len(parts) >= 3 else ""
+
+        # Find the last user/assistant pair so we have something to attach
+        # the rating to. Empty history → still record but with no excerpt.
+        last_user, last_assistant = "", ""
+        for msg in reversed(self.conversation_history or []):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "assistant" and not last_assistant:
+                last_assistant = (msg.get("content") or "")[:1000]
+            elif msg.get("role") == "user" and last_user == "":
+                last_user = (msg.get("content") or "")[:500]
+            if last_user and last_assistant:
+                break
+
+        try:
+            from agent.feedback import record_rating
+            ok = record_rating(
+                rating,
+                session_id=getattr(self, "session_id", "") or "",
+                reason=reason,
+                model=getattr(self, "model", "") or "",
+                user_message=last_user,
+                assistant_response=last_assistant,
+            )
+        except Exception as exc:
+            print(f"  ⚠ feedback save failed: {exc}")
+            return
+        if not ok:
+            print("  Usage: /rate up|down [reason]")
+            return
+        thumbs = "👍" if rating.lower().startswith(("u", "+", "y")) else "👎"
+        print(f"  {thumbs} Rating recorded.")
+
     def _handle_model_switch(self, cmd_original: str):
         """Handle /model command — switch model for this session.
 
@@ -4440,6 +4491,8 @@ class HermesCLI:
                 self._pending_input.put(retry_msg)
         elif canonical == "undo":
             self.undo_last()
+        elif canonical == "rate":
+            self._handle_rate_command(cmd_original)
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
         elif canonical == "save":

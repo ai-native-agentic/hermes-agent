@@ -55,6 +55,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
     CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
+    CommandDef("rate", "Rate the last response (up/down) with optional reason",
+               "Session", args_hint="<up|down> [reason]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",

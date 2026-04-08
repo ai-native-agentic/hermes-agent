@@ -2848,6 +2848,27 @@ class AIAgent:
         if skills_prompt:
             prompt_parts.append(skills_prompt)
 
+        # B1 — Reflexion-lite: surface past tool errors that match the
+        # current user query so the model can avoid repeating them.
+        # Cheap (file read + token-overlap match), opt-out via
+        # agent.error_lessons.enabled: false in config.yaml.
+        try:
+            from hermes_cli.config import load_config as _load_config
+            _agent_cfg = (_load_config() or {}).get("agent") or {}
+            _lessons_enabled = (_agent_cfg.get("error_lessons") or {}).get("enabled", True)
+        except Exception:
+            _lessons_enabled = True
+        if _lessons_enabled:
+            try:
+                from agent.error_lessons import lessons_for_query, format_lessons_block
+                _q = getattr(self, "_current_user_query", "") or ""
+                _lessons = lessons_for_query(_q, max_results=3)
+                _lessons_block = format_lessons_block(_lessons)
+                if _lessons_block:
+                    prompt_parts.append(_lessons_block)
+            except Exception:
+                pass
+
         if not self.skip_context_files:
             # Use TERMINAL_CWD for context file discovery when set (gateway
             # mode).  The gateway process runs from the hermes-agent install
@@ -6735,6 +6756,20 @@ class AIAgent:
             _is_error_result, _ = _detect_tool_failure(function_name, function_result)
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+                # B1 lesson capture — best-effort, never blocks the loop.
+                # We snapshot (tool, error, current user query) so that the
+                # next prompt with similar tokens can pre-emptively warn
+                # the model about the same failure.
+                try:
+                    from agent.error_lessons import record_error
+                    record_error(
+                        tool_name=function_name,
+                        error_message=function_result,
+                        user_query=getattr(self, "_current_user_query", "") or "",
+                        tool_args=function_args if isinstance(function_args, str) else None,
+                    )
+                except Exception:
+                    pass
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
 

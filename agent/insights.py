@@ -846,6 +846,22 @@ class InsightsEngine:
                     lines.append(f"    … +{len(unused) - 5} more")
             lines.append("")
 
+        # User feedback panel — surfaces /rate signal so the user can see
+        # whether they're actually liking the agent over time. C1 wire-up.
+        try:
+            from agent.feedback import stats as _feedback_stats
+            fb = _feedback_stats(days=report.get("days", 30))
+        except Exception:
+            fb = None
+        if fb and fb.get("total"):
+            lines.append("  👍 User Feedback")
+            lines.append("  " + "─" * 56)
+            ratio_pct = fb["ratio"] * 100
+            lines.append(f"  Thumbs up:   {fb['up']:>4d}")
+            lines.append(f"  Thumbs down: {fb['down']:>4d}")
+            lines.append(f"  Ratio:       {ratio_pct:>5.1f}%")
+            lines.append("")
+
         return "\n".join(lines)
 
     def format_gateway(self, report: Dict) -> str:

@@ -628,6 +628,14 @@ def skill_manage(
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
             pass
+        # Best-effort usage tracking on successful create/edit/patch.
+        # Skips delete (skill is gone) and the read-only get_path action.
+        if action in ("create", "edit", "patch", "write_file"):
+            try:
+                from agent.skill_metrics import record_write
+                record_write(name)
+            except Exception:
+                pass
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -639,23 +647,12 @@ def skill_manage(
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
     "description": (
-        "Manage skills (create, update, delete). Skills are your procedural "
-        "memory — reusable approaches for recurring task types. "
-        "New skills go to ~/.hermes/skills/; existing skills can be modified wherever they live.\n\n"
-        "Actions: create (full SKILL.md + optional category), "
-        "patch (old_string/new_string — preferred for fixes), "
-        "edit (full SKILL.md rewrite — major overhauls only), "
-        "delete, write_file, remove_file.\n\n"
-        "Create when: complex task succeeded (5+ calls), errors overcome, "
-        "user-corrected approach worked, non-trivial workflow discovered, "
-        "or user asks you to remember a procedure.\n"
-        "Update when: instructions stale/wrong, OS-specific failures, "
-        "missing steps or pitfalls found during use. "
-        "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
-        "After difficult/iterative tasks, offer to save as a skill. "
-        "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
-        "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls section, verification steps. Use skill_view() to see format examples."
+        # Slim summary — full guidance lives in skill_view() output and the
+        # parameter descriptions below. Smaller models lose tool-selection
+        # accuracy when tool descriptions exceed ~200 tokens.
+        "Manage your procedural memory: create / patch / edit / delete a skill, "
+        "or write_file / remove_file inside one. Use after non-trivial tasks "
+        "you'd want to repeat. Call skill_view() first to inspect format examples."
     ),
     "parameters": {
         "type": "object",

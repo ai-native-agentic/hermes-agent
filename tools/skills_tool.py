@@ -1254,6 +1254,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if isinstance(metadata, dict):
             result["metadata"] = metadata
 
+        # Best-effort usage tracking — never blocks the read.
+        try:
+            from agent.skill_metrics import record_view
+            record_view(name)
+        except Exception:
+            pass
+
         return json.dumps(result, ensure_ascii=False)
 
     except Exception as e:

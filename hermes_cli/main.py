@@ -4181,6 +4181,27 @@ For more help on a command:
     # =========================================================================
     # chat command
     # =========================================================================
+
+    def _provider_choices() -> list[str]:
+        """Build the --provider argparse choices list from the canonical
+        provider registries so adding a new provider only needs the entry
+        in hermes_cli.auth.PROVIDER_REGISTRY (and optionally an overlay
+        in hermes_cli.providers). Previously this list was hardcoded and
+        had to be manually edited every time — that drift was the friction
+        that surfaced when adding the lunark provider in commit 9e54104d.
+        """
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+            from hermes_cli.providers import HERMES_OVERLAYS
+            seen: set[str] = {"auto"}
+            seen.update(PROVIDER_REGISTRY.keys())
+            seen.update(HERMES_OVERLAYS.keys())
+            return sorted(seen)
+        except Exception:
+            # Bootstrap failure: degrade to a stable minimum so the CLI
+            # still parses --provider for the most common providers.
+            return ["auto", "openrouter", "anthropic", "lunark"]
+
     chat_parser = subparsers.add_parser(
         "chat",
         help="Interactive chat with the agent",
@@ -4206,7 +4227,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "lunark"],
+        choices=_provider_choices(),
         default=None,
         help="Inference provider (default: auto)"
     )

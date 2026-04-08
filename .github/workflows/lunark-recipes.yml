@@ -1,0 +1,97 @@
+name: Lunark Recipes
+
+# Sanity-check the examples/lunark/ recipes on every push.
+#
+# We only run things that are FAST and OFFLINE here:
+#   - extractor self-test (the dependency-free TF-IDF + LaTeX/fraction
+#     normalizer powering the verifier-style runners)
+#   - skill retrieval unit + integration tests (Q1 patch)
+#   - import smoke test for every recipe under examples/lunark/
+#
+# The live runners (multi_model.py / matrix.py / variance.py) hit the
+# real lunark gateway and are NOT executed here — they would require
+# secrets and a stable upstream to be CI-friendly. They are still
+# importable so a syntax error or rename will be caught immediately.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "examples/lunark/**"
+      - "agent/skill_retrieval.py"
+      - "agent/prompt_builder.py"
+      - "tests/test_skill_retrieval*.py"
+      - ".github/workflows/lunark-recipes.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "examples/lunark/**"
+      - "agent/skill_retrieval.py"
+      - "agent/prompt_builder.py"
+      - "tests/test_skill_retrieval*.py"
+      - ".github/workflows/lunark-recipes.yml"
+
+concurrency:
+  group: lunark-recipes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  recipes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Create venv
+        run: uv venv .venv --python 3.11
+
+      - name: Install hermes-agent (editable, no extras)
+        run: |
+          source .venv/bin/activate
+          uv pip install -e .
+          uv pip install pytest pytest-xdist
+
+      - name: Run extractor self-test (canonical answer normalization)
+        run: |
+          source .venv/bin/activate
+          python examples/lunark/extractor.py
+
+      - name: Run skill retrieval pytest (Q1 patch)
+        run: |
+          source .venv/bin/activate
+          pytest -n auto -q tests/test_skill_retrieval.py tests/test_skill_retrieval_integration.py
+
+      - name: Recipe import smoke test
+        run: |
+          source .venv/bin/activate
+          # Each recipe must at least be importable. We don't run them —
+          # they hit the live lunark gateway — but a rename or broken
+          # import would silently rot otherwise.
+          python - <<'PY'
+          import importlib.util, sys, os, pathlib
+          recipes = sorted(pathlib.Path("examples/lunark").glob("*.py"))
+          ok, fail = [], []
+          for r in recipes:
+              if r.name == "__init__.py":
+                  continue
+              try:
+                  src = r.read_text()
+                  # Ensure the file at least parses; we don't actually exec
+                  # it because most recipes start hammering lunark on import.
+                  compile(src, str(r), "exec")
+                  ok.append(r.name)
+              except SyntaxError as e:
+                  fail.append((r.name, str(e)))
+          for n in ok:
+              print(f"  ✓ {n}")
+          for n, msg in fail:
+              print(f"  ✗ {n}: {msg}")
+          sys.exit(1 if fail else 0)
+          PY

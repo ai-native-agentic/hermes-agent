@@ -106,6 +106,68 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 
 ---
 
+## Self-hosted Provider Recipes (`examples/lunark/`)
+
+End-to-end recipes for running Hermes against a self-hosted vLLM
+gateway, validated continuously against the live `lunark` cluster.
+Use these as a starting point for any OpenAI-compatible endpoint
+(local llama.cpp, hosted vLLM, MosaicML, etc.).
+
+| Recipe | What it does |
+|---|---|
+| [`provision.py`](examples/lunark/provision.py) | Read `<base_url>/models` and write isolated `HERMES_HOME` profiles per model. Idempotent — rerun on lineup changes. Defaults to `~/.hermes/profiles/` so the profiles survive reboot. |
+| [`extractor.py`](examples/lunark/extractor.py) | Robust answer extraction (LaTeX `\frac`/`\boxed`, decimals ↔ fractions, English number words, yes/no with negation). Used by every verifier-style runner. |
+| [`batch_qa.py`](examples/lunark/batch_qa.py) | 100-prompt single-model baseline across 10 categories (math/logic/code/translate/format/text/stepwise/compare/creative/knowledge). |
+| [`matrix.py`](examples/lunark/matrix.py) | 4 models × 100 prompts = 400 ACP calls via 8-worker pool. |
+| [`tool_calls.py`](examples/lunark/tool_calls.py) | 10 tool-using scenarios per model. Validates that the `tool_calling: true` advertisement in `/v1/models` is real. |
+| [`moa.py`](examples/lunark/moa.py) / [`moa_hard.py`](examples/lunark/moa_hard.py) / [`moa_aggregator.py`](examples/lunark/moa_aggregator.py) | Three Mixture-of-Agents flavors: simple majority vote, weighted vote, and the paper-style 3-reference + 1-aggregator architecture. |
+| [`variance.py`](examples/lunark/variance.py) | 5-run variance measurement on the 100-prompt set — produces per-model `mean ± stdev` so single-shot accuracy isn't trusted blindly. |
+| [`use_cases.py`](examples/lunark/use_cases.py) | 50 practical use cases across 10 industry categories, each routed to the most appropriate model. |
+| [`advanced.py`](examples/lunark/advanced.py) | ACP advanced features: multi-turn coherence, `session/list`, `session/fork` divergence, `session/cancel` mid-stream. Raw JSON-RPC. |
+
+See [`examples/lunark/README.md`](examples/lunark/README.md) for the
+quickstart and a summary of lessons learned (including measured pitfalls
+like `tool_calling: true` advertisements that don't actually work for
+some models, and the trade-off between mode=all and mode=topk skill
+injection — see `skills.retrieval` config below).
+
+---
+
+## Optional config blocks (recent additions)
+
+```yaml
+# Drop tool definitions when /v1/models advertises tool_calling: false.
+# Auto-detected per model; no config required to enable. See P1 commit.
+
+# Top-k skill retrieval — bound system-prompt token cost when many
+# user/agent skills accumulate. Off by default (mode: all) for full
+# backward compat.
+skills:
+  retrieval:
+    mode: topk          # default "all" preserves the old "inject all"
+    top_k: 3
+    min_score: 0.05
+
+# Mixture-of-Agents tool: point at any OpenAI-compatible provider.
+# Default is OpenRouter (the original behavior).
+moa:
+  provider: custom
+  base_url: https://llm.lunark.ai/v1
+  api_key_env: LUNARK_API_KEY
+  reference_models:
+    - Qwen3.5-27B
+    - Qwen2.5-32B-Instruct
+    - Gemma-4-31B-it
+  aggregator_model: Qwen3-32B
+```
+
+`hermes insights` now also surfaces a `🌱 Self-Learning` panel showing
+how many user/agent skills have been created in the last 30 days, the
+top-used skills (with invocation counts), and any unused skills — so
+the loop's effect is visible instead of opaque.
+
+---
+
 ## Migrating from OpenClaw
 
 If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.

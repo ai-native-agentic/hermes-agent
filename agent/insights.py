@@ -219,21 +219,35 @@ class InsightsEngine:
 
         created_in_window = 0
         total_user = 0
+        user_skill_names: list[str] = []
         for skill_md in glob.glob(str(skills_root / "*" / "*" / "SKILL.md")):
             skill_basename = os.path.basename(os.path.dirname(skill_md))
             if skill_basename in bundled:
                 continue
             total_user += 1
+            user_skill_names.append(skill_basename)
             try:
                 if os.path.getmtime(skill_md) >= cutoff:
                     created_in_window += 1
             except OSError:
                 pass
 
+        # Pull invocation metrics if the .usage.json file exists
+        top_used: list = []
+        unused: list = []
+        try:
+            from agent.skill_metrics import top_used as _top, unused_since
+            top_used = _top(n=5)
+            unused = unused_since(int(cutoff), user_skill_names)
+        except Exception:
+            pass
+
         return {
             "created_in_window": created_in_window,
             "total_user_skills": total_user,
             "skills_dir_exists": True,
+            "top_used": top_used,
+            "unused": unused,
         }
 
     # =========================================================================
@@ -813,6 +827,23 @@ class InsightsEngine:
             lines.append(f"  User-created total:           {total}")
             if created == 0 and total == 0:
                 lines.append("  ⚠ No user/agent skills yet — self-learning loop has not fired.")
+
+            # Top-used skills (from .usage.json) — answers "is the agent
+            # actually invoking what it has saved?"
+            top_used = skills.get("top_used") or []
+            if top_used:
+                lines.append("")
+                lines.append("  Most-used skills (last 30d):")
+                for name, views, _last in top_used[:5]:
+                    lines.append(f"    {views:>4d}× {name}")
+            unused = skills.get("unused") or []
+            if unused:
+                lines.append("")
+                lines.append(f"  Unused (>30d): {len(unused)} skill(s)")
+                for name in unused[:5]:
+                    lines.append(f"    – {name}")
+                if len(unused) > 5:
+                    lines.append(f"    … +{len(unused) - 5} more")
             lines.append("")
 
         return "\n".join(lines)

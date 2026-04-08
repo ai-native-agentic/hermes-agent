@@ -33,7 +33,7 @@ from extractor import (  # noqa: E402
 )
 from examples.acp_client import HermesACPClient  # noqa: E402
 
-REFERENCE_MODELS = ["Gemma-4-E4B-it", "Qwen2.5-32B-Instruct", "Qwen3.5-27B"]
+REFERENCE_MODELS = ["Gemma-4-31B-it", "Qwen2.5-32B-Instruct", "Qwen3.5-27B"]
 AGGREGATOR_MODEL = "Qwen3-32B"
 
 EXTRACTORS = {

@@ -18,7 +18,7 @@ os.environ["PATH"] = f"{os.environ['HOME']}/.local/bin:" + os.environ.get("PATH"
 from batch_qa import P, check  # noqa: E402
 from examples.acp_client import HermesACPClient  # noqa: E402
 
-MODELS = ["Qwen3-32B", "Gemma-4-E4B-it", "Qwen2.5-32B-Instruct", "Qwen3.5-27B"]
+MODELS = ["Qwen3-32B", "Gemma-4-31B-it", "Qwen2.5-32B-Instruct", "Qwen3.5-27B"]
 
 # Cartesian product: each (model, prompt) is one job
 JOBS = [(m, pid, cat, prompt, expected) for m in MODELS for pid, cat, prompt, expected in P]

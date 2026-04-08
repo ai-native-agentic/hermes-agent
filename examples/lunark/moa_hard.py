@@ -19,14 +19,14 @@ os.environ["PATH"] = f"{os.environ['HOME']}/.local/bin:" + os.environ.get("PATH"
 from extractor import extract_number, extract_fraction, extract_yesno, extract_word, normalize_for_compare
 from examples.acp_client import HermesACPClient
 
-MODELS = ["Qwen3-32B", "Gemma-4-E4B-it", "Qwen2.5-32B-Instruct", "Qwen3.5-27B"]
+MODELS = ["Qwen3-32B", "Gemma-4-31B-it", "Qwen2.5-32B-Instruct", "Qwen3.5-27B"]
 
 # Weights from prior 100-prompt baseline accuracy
 WEIGHTS = {
     "Qwen3-32B":            1.5,   # 100% baseline
     "Qwen3.5-27B":          1.5,   # 100% baseline
     "Qwen2.5-32B-Instruct": 1.0,   # 98% baseline
-    "Gemma-4-E4B-it":       0.5,   # 95% baseline + tool fail
+    "Gemma-4-31B-it":       0.5,   # 95% baseline + tool fail
 }
 
 # 100 hard prompts (id, prompt, kind, expected canonical)

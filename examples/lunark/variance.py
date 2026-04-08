@@ -31,7 +31,7 @@ _ns = {"__file__": _moa_hard_path, "__name__": "moa_hard_loader"}
 exec(compile(_src[:_cut], _moa_hard_path, "exec"), _ns)
 P = _ns["P"]
 
-MODELS = ["Qwen3-32B", "Gemma-4-E4B-it", "Qwen2.5-32B-Instruct", "Qwen3.5-27B"]
+MODELS = ["Qwen3-32B", "Gemma-4-31B-it", "Qwen2.5-32B-Instruct", "Qwen3.5-27B"]
 N_RUNS = 5
 
 EXTRACTORS = {

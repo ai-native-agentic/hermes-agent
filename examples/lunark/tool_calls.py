@@ -14,7 +14,7 @@ sys.path.insert(0, _REPO)
 os.environ["PATH"] = f"{os.environ['HOME']}/.local/bin:" + os.environ.get("PATH", "")
 from examples.acp_client import HermesACPClient  # noqa: E402
 
-MODELS = ["Qwen3-32B", "Gemma-4-E4B-it", "Qwen2.5-32B-Instruct", "Qwen3.5-27B"]
+MODELS = ["Qwen3-32B", "Gemma-4-31B-it", "Qwen2.5-32B-Instruct", "Qwen3.5-27B"]
 
 # Each scenario: id, prompt, check function (gets full response text)
 def has(*words):

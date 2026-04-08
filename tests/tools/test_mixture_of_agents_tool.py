@@ -96,6 +96,74 @@ def test_check_moa_requirements_uses_configured_api_key_env(monkeypatch):
     assert moa.check_moa_requirements() is True
 
 
+def test_aggregator_prompt_omits_weights_when_no_reference_names():
+    """Backward compat: callers that don't pass reference_models still get
+    the same enumerated-response format as before this patch."""
+    out = moa._construct_aggregator_prompt(
+        "BASE", ["answer one", "answer two"]
+    )
+    assert "BASE" in out
+    assert "1. answer one" in out
+    assert "2. answer two" in out
+    assert "reliability" not in out  # no annotation
+
+
+def test_aggregator_prompt_uses_reference_model_names_when_no_metrics(monkeypatch):
+    """When reference_models is supplied but no metrics exist yet, the
+    prompt still labels each response with its model name (no reliability
+    score)."""
+    monkeypatch.setattr(
+        "agent.moa_metrics.derive_weights",
+        lambda names: {n: 0.0 for n in names},
+    )
+    out = moa._construct_aggregator_prompt(
+        "BASE",
+        ["answer A", "answer B"],
+        reference_models=["modelA", "modelB"],
+    )
+    # When derive_weights returns 0 for everyone, the wire-up still shows
+    # model name + reliability — just both at 0.00
+    assert "modelA" in out
+    assert "modelB" in out
+
+
+def test_aggregator_prompt_injects_reliability_scores(monkeypatch):
+    """The headline A1 wire-up: derived weights show up in the aggregator
+    prompt next to each reference model so the aggregator can weight
+    advice by historical reliability."""
+    monkeypatch.setattr(
+        "agent.moa_metrics.derive_weights",
+        lambda names: {"modelA": 0.7, "modelB": 0.2, "modelC": 0.1},
+    )
+    out = moa._construct_aggregator_prompt(
+        "BASE",
+        ["good answer", "bad answer", "weird answer"],
+        reference_models=["modelA", "modelB", "modelC"],
+    )
+    assert "modelA" in out and "0.70" in out
+    assert "modelB" in out and "0.20" in out
+    assert "modelC" in out and "0.10" in out
+    # Each response is paired with its model
+    assert "good answer" in out
+    assert "bad answer" in out
+    assert "weird answer" in out
+
+
+def test_aggregator_prompt_handles_metrics_failure_gracefully(monkeypatch):
+    """If agent.moa_metrics raises (e.g. corrupt usage file), the
+    aggregator prompt must still build cleanly without reliability
+    annotations."""
+    def _explode(_names):
+        raise RuntimeError("usage file corrupt")
+    monkeypatch.setattr("agent.moa_metrics.derive_weights", _explode)
+    out = moa._construct_aggregator_prompt(
+        "BASE", ["a", "b"], reference_models=["m1", "m2"]
+    )
+    # Should still contain the responses; just no reliability section
+    assert "a" in out and "b" in out
+    assert "reliability" not in out
+
+
 def test_get_moa_configuration_reflects_active_provider(monkeypatch):
     """get_moa_configuration() should expose the active provider, models,
     and capability flags so callers can introspect the runtime config."""

@@ -124,16 +124,47 @@ def topk_skills(
     skills: Iterable[dict],
     k: int = 3,
     min_score: float = 0.0,
+    usage_boost: bool = True,
 ) -> List[dict]:
     """Convenience wrapper: return up to ``k`` skills with score ≥ ``min_score``.
 
     When the query is empty, returns the first ``k`` skills in the input
     order (so callers always get *something* if they ask for top-k).
+
+    A2 wire-up — usage_boost (default True): multiply each TF-IDF score by
+    ``log(1 + views) + 1`` from agent.skill_metrics, so skills the agent
+    has actually used before float to the top of the index. New skills
+    with no usage record get the +1 floor so cold-start doesn't punish
+    them. Disable explicitly for tests / synthetic queries.
     """
     if k <= 0:
         return []
     scored = score_skills(query, skills)
     if not query or not query.strip():
         return [s for s, _ in scored[:k]]
+
+    if usage_boost:
+        try:
+            from agent.skill_metrics import load_metrics
+
+            usage = load_metrics()
+            boosted: List[Tuple[dict, float]] = []
+            for s, base_score in scored:
+                name = s.get("name") if isinstance(s, dict) else None
+                views = 0
+                if name:
+                    entry = usage.get(name) or {}
+                    views = int(entry.get("views", 0))
+                # Multiplier in [1.0, ~5.0] for typical view counts.
+                # New skills (views=0) keep their original TF-IDF score.
+                multiplier = 1.0 + math.log1p(views)
+                boosted.append((s, base_score * multiplier))
+            boosted.sort(key=lambda kv: kv[1], reverse=True)
+            scored = boosted
+        except Exception:
+            # Best-effort: any failure (missing metrics file, import
+            # error inside a test) falls back to plain TF-IDF.
+            pass
+
     filtered = [s for s, score in scored if score >= min_score]
     return filtered[:k]

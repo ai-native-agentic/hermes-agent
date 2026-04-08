@@ -50,7 +50,7 @@ import logging
 import os
 import asyncio
 import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
 from agent.auxiliary_client import extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
@@ -70,6 +70,108 @@ REFERENCE_MODELS = [
 # Aggregator model - synthesizes reference responses into final output.
 # Prefer the strongest synthesis model in the current OpenRouter lineup.
 AGGREGATOR_MODEL = "anthropic/claude-opus-4.6"
+
+
+# ----------------------------------------------------------------------------
+# Configurable client factory — supports any OpenAI-compatible provider.
+#
+# Backward compat: if config.yaml has no `moa:` section (or `moa.provider`
+# is "openrouter"), this returns the existing OpenRouter client and the
+# tool behaves exactly as before.
+#
+# To use a different provider (lunark, a local vLLM gateway, etc.):
+#
+#   moa:
+#     provider: custom              # any non-"openrouter" string
+#     base_url: https://llm.lunark.ai/v1
+#     api_key_env: LUNARK_API_KEY   # env var holding the bearer token
+#     reference_models:
+#       - Qwen3.5-27B
+#       - Qwen2.5-32B-Instruct
+#       - Gemma-4-E4B-it
+#     aggregator_model: Qwen3-32B
+#     reference_temperature: 0.6    # optional override
+#     aggregator_temperature: 0.4   # optional override
+#     enable_reasoning: false       # set to true on OpenRouter only
+# ----------------------------------------------------------------------------
+
+_custom_client = None
+_custom_client_key = None  # (provider, base_url) tuple to detect config changes
+
+
+def _load_moa_config() -> Dict[str, Any]:
+    """Load `moa:` section from CLI_CONFIG / config.yaml. Empty dict if absent."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        return {}
+    moa = cfg.get("moa")
+    if isinstance(moa, dict):
+        return moa
+    return {}
+
+
+def _build_custom_client(provider: str, base_url: str, api_key: str):
+    """Build a fresh AsyncOpenAI client for an arbitrary OpenAI-compatible endpoint."""
+    try:
+        from openai import AsyncOpenAI
+    except ImportError as exc:
+        raise RuntimeError("openai package required for custom MoA providers") from exc
+    if not base_url:
+        raise ValueError(f"moa.base_url must be set for provider {provider!r}")
+    if not api_key:
+        raise ValueError(f"No API key for MoA provider {provider!r}")
+    return AsyncOpenAI(base_url=base_url, api_key=api_key)
+
+
+def _get_moa_client():
+    """Return the (cached) async client for the configured MoA provider.
+
+    Resolution:
+      1. If config has no `moa:` section or `moa.provider` is "openrouter"
+         (default) → fall back to the shared OpenRouter client.
+      2. Otherwise build (and cache) an AsyncOpenAI client from
+         moa.base_url + the env var named by moa.api_key_env.
+    """
+    global _custom_client, _custom_client_key
+
+    cfg = _load_moa_config()
+    provider = (cfg.get("provider") or "openrouter").strip().lower()
+
+    if provider == "openrouter":
+        return _get_openrouter_client()
+
+    base_url = cfg.get("base_url") or ""
+    api_key_env = cfg.get("api_key_env") or ""
+    api_key = os.getenv(api_key_env, "") if api_key_env else ""
+    # Allow inline `api_key` for dev/local use, though api_key_env is preferred
+    if not api_key and cfg.get("api_key"):
+        api_key = cfg["api_key"]
+
+    cache_key = (provider, base_url)
+    if _custom_client is None or _custom_client_key != cache_key:
+        _custom_client = _build_custom_client(provider, base_url, api_key)
+        _custom_client_key = cache_key
+        logger.info("MoA: using custom provider %r at %s", provider, base_url)
+    return _custom_client
+
+
+def _resolve_models() -> Tuple[List[str], str, float, float, bool]:
+    """Pull effective reference list, aggregator, temperatures, reasoning flag.
+
+    Returns: (reference_models, aggregator_model, ref_temp, agg_temp, enable_reasoning)
+    """
+    cfg = _load_moa_config()
+    provider = (cfg.get("provider") or "openrouter").strip().lower()
+    refs = cfg.get("reference_models") or REFERENCE_MODELS
+    agg = cfg.get("aggregator_model") or AGGREGATOR_MODEL
+    ref_t = float(cfg.get("reference_temperature", REFERENCE_TEMPERATURE))
+    agg_t = float(cfg.get("aggregator_temperature", AGGREGATOR_TEMPERATURE))
+    # Reasoning extra_body is OpenRouter-specific; default off for custom providers
+    default_reasoning = (provider == "openrouter")
+    enable_reasoning = bool(cfg.get("enable_reasoning", default_reasoning))
+    return list(refs), agg, ref_t, agg_t, enable_reasoning
 
 # Temperature settings optimized for MoA performance
 REFERENCE_TEMPERATURE = 0.6  # Balanced creativity for diverse perspectives
@@ -129,20 +231,19 @@ async def _run_reference_model_safe(
             api_params = {
                 "model": model,
                 "messages": [{"role": "user", "content": user_prompt}],
-                "extra_body": {
-                    "reasoning": {
-                        "enabled": True,
-                        "effort": "xhigh"
-                    }
-                }
             }
-            
+            _, _, _, _, _enable_reasoning = _resolve_models()
+            if _enable_reasoning:
+                api_params["extra_body"] = {
+                    "reasoning": {"enabled": True, "effort": "xhigh"}
+                }
+
             # GPT models (especially gpt-4o-mini) don't support custom temperature values
             # Only include temperature for non-GPT models
             if not model.lower().startswith('gpt-'):
                 api_params["temperature"] = temperature
-            
-            response = await _get_openrouter_client().chat.completions.create(**api_params)
+
+            response = await _get_moa_client().chat.completions.create(**api_params)
             
             content = extract_content_or_reasoning(response)
             if not content:
@@ -194,36 +295,34 @@ async def _run_aggregator_model(
     Returns:
         str: Synthesized final response
     """
-    logger.info("Running aggregator model: %s", AGGREGATOR_MODEL)
+    _refs, agg_model, _ref_t, _agg_t, enable_reasoning = _resolve_models()
+    logger.info("Running aggregator model: %s", agg_model)
 
     # Build parameters for the API call
     api_params = {
-        "model": AGGREGATOR_MODEL,
+        "model": agg_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "extra_body": {
-            "reasoning": {
-                "enabled": True,
-                "effort": "xhigh"
-            }
-        }
     }
+    if enable_reasoning:
+        api_params["extra_body"] = {
+            "reasoning": {"enabled": True, "effort": "xhigh"}
+        }
 
     # GPT models (especially gpt-4o-mini) don't support custom temperature values
     # Only include temperature for non-GPT models
-    if not AGGREGATOR_MODEL.lower().startswith('gpt-'):
+    if not agg_model.lower().startswith('gpt-'):
         api_params["temperature"] = temperature
 
-    response = await _get_openrouter_client().chat.completions.create(**api_params)
-
+    response = await _get_moa_client().chat.completions.create(**api_params)
     content = extract_content_or_reasoning(response)
 
     # Retry once on empty content (reasoning-only response)
     if not content:
         logger.warning("Aggregator returned empty content, retrying once")
-        response = await _get_openrouter_client().chat.completions.create(**api_params)
+        response = await _get_moa_client().chat.completions.create(**api_params)
         content = extract_content_or_reasoning(response)
 
     logger.info("Aggregation complete (%s characters)", len(content))
@@ -295,14 +394,19 @@ async def mixture_of_agents_tool(
     try:
         logger.info("Starting Mixture-of-Agents processing...")
         logger.info("Query: %s", user_prompt[:100])
-        
-        # Validate API key availability
-        if not os.getenv("OPENROUTER_API_KEY"):
+
+        # Resolve effective config (provider, models, temperatures, reasoning).
+        # Args take precedence over config.yaml `moa:`, which takes precedence
+        # over the OpenRouter defaults baked into REFERENCE_MODELS / AGGREGATOR_MODEL.
+        cfg_refs, cfg_agg, cfg_ref_t, cfg_agg_t, _enable_reasoning = _resolve_models()
+        cfg_provider = (_load_moa_config().get("provider") or "openrouter").strip().lower()
+
+        # Backward compat: only require OPENROUTER_API_KEY when actually using OpenRouter.
+        if cfg_provider == "openrouter" and not os.getenv("OPENROUTER_API_KEY"):
             raise ValueError("OPENROUTER_API_KEY environment variable not set")
-        
-        # Use provided models or defaults
-        ref_models = reference_models or REFERENCE_MODELS
-        agg_model = aggregator_model or AGGREGATOR_MODEL
+
+        ref_models = reference_models or cfg_refs
+        agg_model = aggregator_model or cfg_agg
         
         logger.info("Using %s reference models in 2-layer MoA architecture", len(ref_models))
         
@@ -409,11 +513,25 @@ async def mixture_of_agents_tool(
 def check_moa_requirements() -> bool:
     """
     Check if all requirements for MoA tools are met.
-    
+
+    For OpenRouter (the default), checks OPENROUTER_API_KEY. For a custom
+    provider configured under config.yaml `moa:`, checks the env var named
+    by `moa.api_key_env`.
+
     Returns:
         bool: True if requirements are met, False otherwise
     """
-    return check_openrouter_api_key()
+    cfg = _load_moa_config()
+    provider = (cfg.get("provider") or "openrouter").strip().lower()
+    if provider == "openrouter":
+        return check_openrouter_api_key()
+    # Custom provider — verify the configured API key env var resolves
+    api_key_env = cfg.get("api_key_env") or ""
+    if api_key_env and os.getenv(api_key_env):
+        return True
+    if cfg.get("api_key"):
+        return True
+    return False
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -429,32 +547,35 @@ def get_debug_session_info() -> Dict[str, Any]:
 def get_available_models() -> Dict[str, List[str]]:
     """
     Get information about available models for MoA processing.
-    
-    Returns:
-        Dict[str, List[str]]: Dictionary with reference and aggregator models
+
+    Reflects the active config (config.yaml `moa:`) when set, falling back
+    to the OpenRouter defaults.
     """
+    refs, agg, _, _, _ = _resolve_models()
     return {
-        "reference_models": REFERENCE_MODELS,
-        "aggregator_models": [AGGREGATOR_MODEL],
-        "supported_models": REFERENCE_MODELS + [AGGREGATOR_MODEL]
+        "reference_models": refs,
+        "aggregator_models": [agg],
+        "supported_models": refs + [agg],
     }
 
 
 def get_moa_configuration() -> Dict[str, Any]:
     """
-    Get the current MoA configuration settings.
-    
-    Returns:
-        Dict[str, Any]: Dictionary containing all configuration parameters
+    Get the current MoA configuration settings (config-aware).
     """
+    refs, agg, ref_t, agg_t, enable_reasoning = _resolve_models()
+    cfg = _load_moa_config()
+    provider = (cfg.get("provider") or "openrouter").strip().lower()
     return {
-        "reference_models": REFERENCE_MODELS,
-        "aggregator_model": AGGREGATOR_MODEL,
-        "reference_temperature": REFERENCE_TEMPERATURE,
-        "aggregator_temperature": AGGREGATOR_TEMPERATURE,
+        "provider": provider,
+        "reference_models": refs,
+        "aggregator_model": agg,
+        "reference_temperature": ref_t,
+        "aggregator_temperature": agg_t,
+        "enable_reasoning_extra_body": enable_reasoning,
         "min_successful_references": MIN_SUCCESSFUL_REFERENCES,
-        "total_reference_models": len(REFERENCE_MODELS),
-        "failure_tolerance": f"{len(REFERENCE_MODELS) - MIN_SUCCESSFUL_REFERENCES}/{len(REFERENCE_MODELS)} models can fail"
+        "total_reference_models": len(refs),
+        "failure_tolerance": f"{len(refs) - MIN_SUCCESSFUL_REFERENCES}/{len(refs)} models can fail",
     }
 
 

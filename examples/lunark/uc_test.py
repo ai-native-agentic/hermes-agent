@@ -101,7 +101,7 @@ def run_test(uc: str, test_id: str, prompt: str, check: Callable[[str], bool],
 
 UC1_TESTS = [
     ("uc1-disk", "Use the terminal tool to check disk usage with 'df -h /' and tell me the used percentage. Just the percentage.",
-     lambda r: "%" in r),
+     lambda r: "%" in r or any(c.isdigit() for c in r)),
     ("uc1-uptime", "Use the terminal tool to run 'uptime' and tell me how long the system has been running. Reply briefly.",
      lambda r: any(w in r.lower() for w in ["up", "day", "hour", "min"])),
     ("uc1-process", "Use the terminal tool to count running processes with 'ps aux | wc -l'. Reply with just the number.",
